@@ -104,9 +104,10 @@
         validate_certs: "{{ esxi_validate_certs }}"
         datacenter: "{{ esxi_datacenter }}"
         name: "{{ vm_name }}"
+        esxi_hostname: "{{ esxi_hostname }}"
         guest_id: "{{ vm_guest_id }}"
         state: present
-        folder: /
+        folder: "/{{ esxi_datacenter }}/vm"
         hardware:
           num_cpus: "{{ vm_cpus }}"
           memory_mb: "{{ vm_memory_mb }}"
@@ -127,7 +128,6 @@
         username: "{{ esxi_username }}"
         password: "{{ esxi_password }}"
         validate_certs: "{{ esxi_validate_certs }}"
-        datacenter: "{{ esxi_datacenter }}"
         name: "{{ vm_name }}"
         boot_order:
           - cdrom
