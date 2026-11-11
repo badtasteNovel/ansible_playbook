@@ -42,6 +42,7 @@ ESXI_PASSWORD=changeme
 ESXI_DATASTORE=datastore1
 ESXI_NETWORK='VM Network'
 ESXI_VALIDATE_CERTS=false
+ESXI_INVENTORY_NAME=esxi.example.local
 ```
 
 - **`ESXI_HOSTNAME`** —— ESXi 主機的 IP 或網域名稱。就是你瀏覽器網址列打的那串位址(不含 `https://`、不含 `/ui`)。
@@ -52,5 +53,7 @@ ESXI_VALIDATE_CERTS=false
 - **`ESXI_NETWORK`** —— VM 的網路卡要接到哪一個 portgroup。
   **怎麼查**:登入 ESXi 網頁介面 → 左側選單點 **Networking** → 切到 **Port groups** 分頁 → 「Name」那一欄就是你要填的值。單機版預設通常叫 `VM Network`(中間有空格,所以範例裡加了引號——這點很重要,`.env` 是被 `source` 讀的,值有空格沒加引號會直接出錯)。
 - **`ESXI_VALIDATE_CERTS`** —— 要不要驗證 ESXi 的 TLS 憑證。保持 `false` 就好:ESXi 預設是自簽憑證(瀏覽器登入時跳出「連線不安全」警告的那張憑證),設 `false` 才能讓 Ansible 正常連線,不會因為憑證不是正式 CA 簽發就直接拒絕連線。
+- **`ESXI_INVENTORY_NAME`** —— 跟 `ESXI_HOSTNAME` 不是同一個東西,別搞混:`ESXI_HOSTNAME` 是拿來**連線**的 IP/位址,這個則是 ESXi **自己在 inventory 裡登記的名字**,建 VM 時 Ansible 要指定「放在哪台 host 上」認的是這個名字,不一定跟連線位址一樣(例如 ESXi 裝機時沒特別設定的話,內部名字可能是一串 FQDN,不是你拿來連線的那個 IP)。
+  **怎麼查**:SSH 進 ESXi(`ssh root@<ESXI_HOSTNAME>`),跑 `esxcli system hostname get`,裡面 `Fully Qualified Domain Name` 那一行就是要填的值。
 
 填完之後,`custom/.env` 應該長得跟上面範例結構一樣,只是數值換成你自己 ESXi 的真實資訊。

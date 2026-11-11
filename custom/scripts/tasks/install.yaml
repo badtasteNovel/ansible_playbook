@@ -7,7 +7,11 @@ tasks:
     silent: true
     cmds:
       - sudo apt-get update
-      - sudo apt-get install -y ansible python3-pyvmomi
+      - sudo apt-get install -y ansible
+      # apt 的 python3-pyvmomi 太舊（6.7.1），用的 ssl.wrap_socket 在 Python 3.12
+      # 被整個移除，會讓 community.vmware 的模組直接噴 AttributeError；用 pip
+      # 裝新版到使用者自己的 ~/.local，不動系統層級套件
+      - pip3 install --user --break-system-packages --upgrade pyvmomi
       - ansible-galaxy collection install -r requirements.yml
 
   iso-tools:

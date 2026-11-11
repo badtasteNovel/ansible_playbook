@@ -34,6 +34,10 @@
     esxi_network: "{{ lookup('env', 'ESXI_NETWORK') }}"
     esxi_validate_certs: "{{ lookup('env', 'ESXI_VALIDATE_CERTS') | default('false') }}"
     esxi_datacenter: ha-datacenter # 單台 ESXi（無 vCenter）的固定虛擬 datacenter 名稱
+    # esxi_hostname 是用來連線的 IP／位址；vmware_guest 建 VM 時要指定「放在哪台
+    # host 上」，認的是 ESXi 自己在 inventory 裡登記的名字，不一定跟連線位址一樣，
+    # 所以要另外一個變數，不能直接重複用 esxi_hostname
+    esxi_inventory_name: "{{ lookup('env', 'ESXI_INVENTORY_NAME') }}"
 
   tasks:
     - name: 確認必要變數都有值
@@ -45,6 +49,7 @@
           - esxi_password | length > 0
           - esxi_datastore | length > 0
           - esxi_network | length > 0
+          - esxi_inventory_name | length > 0
         fail_msg: >-
           請確認 custom/.env 已填好必要連線資訊，且透過 --extra-vars 傳入
           iso_path（task select-iso 的輸出路徑）
@@ -108,7 +113,7 @@
         validate_certs: "{{ esxi_validate_certs }}"
         datacenter: "{{ esxi_datacenter }}"
         name: "{{ vm_name }}"
-        esxi_hostname: "{{ esxi_hostname }}"
+        esxi_hostname: "{{ esxi_inventory_name }}"
         guest_id: "{{ vm_guest_id }}"
         state: present
         folder: "/{{ esxi_datacenter }}/vm"

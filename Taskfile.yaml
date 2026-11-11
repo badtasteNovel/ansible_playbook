@@ -21,3 +21,18 @@ tasks:
           exit 1
         fi
         echo "$iso_path"
+
+  find-esxi-hostname:
+    desc: "找尋 ESXi host name（SSH 進 ESXi 跑 esxcli system hostname get，查 ESXI_INVENTORY_NAME 該填的值）"
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        if [ ! -f custom/.env ]; then
+          echo "錯誤：找不到 custom/.env，先 cp custom/.env.example custom/.env 並填好真實值" >&2
+          exit 1
+        fi
+        set -a
+        source custom/.env
+        set +a
+        ssh "${ESXI_USERNAME}@${ESXI_HOSTNAME}" esxcli system hostname get
