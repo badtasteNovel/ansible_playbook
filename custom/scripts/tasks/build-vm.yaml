@@ -31,4 +31,42 @@ tasks:
           echo "錯誤：找不到 $iso_path，請先把對應的 ISO 放進 custom/iso/" >&2
           exit 1
         fi
+
+        # vm_name 要跟 build_vm/debian.yml 裡的 vm_name 保持一致——目前全專案
+        # 只有這一台 VM，先硬寫；之後要支援多台 VM 的話，這個值要想辦法變成
+        # 兩邊共用的單一來源，而不是分別寫死兩份。
+        vm_name="debian-vm"
+        preseed_iso_path="$(pwd)/custom/generated/iso/${vm_name}/${vm_name}-preseed.iso"
+
+        # ISO 重新封裝（含修改開機參數）要花時間，而且 build_vm/debian.yml
+        # 裡那個 task 用 creates 判斷「本地檔案已存在就跳過」——不會管腳本
+        # 或 preseed 內容有沒有變。所以在這裡先問清楚使用者的意圖：要重新
+        # 封裝就先刪掉舊檔讓它重跑，不要就維持現狀（沿用舊 ISO、不再多問）。
+        if [ -f "$preseed_iso_path" ]; then
+          if gum confirm "已經有打包好的 ISO（$preseed_iso_path），要重新封裝嗎？（選「否」就沿用現有的舊 ISO）"; then
+            rm -f "$preseed_iso_path"
+          fi
+        fi
+
+        # 上傳到 datastore 那幾步（scp ISO、scp .vmx、vmkfstools 建磁碟）全部
+        # 都是無條件覆蓋，所以上傳之前要先確認遠端資料夾是否已經存在過，避免
+        # 在使用者沒注意到的情況下，直接把已經在用的 VM 檔案蓋掉。這裡只用
+        # 純檔案系統層級的 SSH 檢查（test -d），刻意不呼叫 vim-cmd 查電源
+        # 狀態——那會碰到 ESXi 的 inventory 層，不符合這個專案「完全不碰
+        # ESXi 管理層 API」的設計，所以請使用者自己確認 VM 沒有在跑。
+        mkdir -p custom/keys
+        export SSHPASS="$HYPERVISOR_PASSWORD"
+        datastore_vm_dir="/vmfs/volumes/${HYPERVISOR_DATASTORE}/${vm_name}"
+        remote_check=$(sshpass -e ssh \
+          -o StrictHostKeyChecking=accept-new \
+          -o UserKnownHostsFile=custom/keys/hypervisor_known_hosts \
+          "${HYPERVISOR_USERNAME}@${HYPERVISOR_HOSTNAME}" \
+          "[ -d '${datastore_vm_dir}' ] && echo EXISTS || echo MISSING")
+        if [ "$remote_check" = "EXISTS" ]; then
+          if ! gum confirm "ESXi 上的 ${datastore_vm_dir} 已經存在，確定要覆蓋裡面的 ISO/.vmx 嗎？（如果這台 VM 現在已經 Register 且開機中，直接覆蓋可能讓它故障——請先自己確認已經 Power Off／Unregister）"; then
+            echo "使用者取消，不會上傳覆蓋" >&2
+            exit 1
+          fi
+        fi
+
         ansible-playbook "$build_path" --extra-vars "iso_path=${iso_path}"
