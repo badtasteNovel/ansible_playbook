@@ -29,15 +29,13 @@ if [ ! -f "$ISOHDPFX_BIN" ]; then
 fi
 
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "$WORK_DIR"' EXIT
+trap 'chmod -R u+w "$WORK_DIR" 2>/dev/null; rm -rf "$WORK_DIR"' EXIT
 
-MOUNT_DIR="$WORK_DIR/mnt"
 EXTRACT_DIR="$WORK_DIR/iso"
-mkdir -p "$MOUNT_DIR" "$EXTRACT_DIR"
+mkdir -p "$EXTRACT_DIR"
 
-sudo mount -o loop,ro "$SRC_ISO" "$MOUNT_DIR"
-cp -a "$MOUNT_DIR/." "$EXTRACT_DIR/"
-sudo umount "$MOUNT_DIR"
+# 用 xorriso 唯讀解開 ISO9660 檔案系統，不用 mount，不需要 sudo、不需要 loop device
+xorriso -indev "$SRC_ISO" -osirrox on -extract / "$EXTRACT_DIR"
 
 chmod -R u+w "$EXTRACT_DIR"
 cp "$PRESEED" "$EXTRACT_DIR/preseed.cfg"
