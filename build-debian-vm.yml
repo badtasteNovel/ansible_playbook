@@ -17,10 +17,10 @@
     vm_disk_gb: 20
     vm_guest_id: debian11_64Guest # 若 ESXi 版本已支援，可改成 debian12_64Guest
 
-    ssh_key_dir: "{{ playbook_dir }}/../keys"
+    ssh_key_dir: "{{ playbook_dir }}/custom/keys"
     ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519"
 
-    preseed_output_dir: "{{ playbook_dir }}/../iso/_generated"
+    preseed_output_dir: "{{ playbook_dir }}/custom/generated"
     preseed_output_iso: "{{ preseed_output_dir }}/{{ vm_name }}-preseed.iso"
     datastore_iso_path: "iso/{{ vm_name }}-preseed.iso"
 
@@ -43,10 +43,10 @@
           - esxi_datastore | length > 0
           - esxi_network | length > 0
         fail_msg: >-
-          請確認 .env 已填好必要連線資訊，且透過 --extra-vars 傳入
+          請確認 custom/.env 已填好必要連線資訊，且透過 --extra-vars 傳入
           iso_path（task select-iso 的輸出路徑）
 
-    - name: 確保 keys/、iso/_generated/ 目錄存在
+    - name: 確保 custom/keys/、custom/generated/ 目錄存在
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -68,7 +68,7 @@
 
     - name: 渲染 preseed.cfg
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../roles/debian_preseed_iso/templates/preseed.cfg.j2"
+        src: "{{ playbook_dir }}/roles/debian_preseed_iso/templates/preseed.cfg.j2"
         dest: "{{ preseed_output_dir }}/preseed.cfg"
         mode: "0600"
       vars:
@@ -78,7 +78,7 @@
     - name: 重新封裝 ISO，塞入 preseed.cfg 並改開機參數
       ansible.builtin.command:
         cmd: >
-          {{ playbook_dir }}/../scripts/remaster-iso.sh
+          {{ playbook_dir }}/custom/scripts/remaster-iso/debian.sh
           {{ iso_path }}
           {{ preseed_output_dir }}/preseed.cfg
           {{ preseed_output_iso }}
