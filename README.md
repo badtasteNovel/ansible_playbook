@@ -40,7 +40,7 @@ ESXI_HOSTNAME=192.168.1.10
 ESXI_USERNAME=root
 ESXI_PASSWORD=changeme
 ESXI_DATASTORE=datastore1
-ESXI_NETWORK="VM Network"
+ESXI_NETWORK='VM Network'
 ESXI_VALIDATE_CERTS=false
 ```
 
@@ -50,7 +50,7 @@ ESXI_VALIDATE_CERTS=false
 - **`ESXI_DATASTORE`** —— VM 的虛擬磁碟、上傳的 ISO 要存在哪個儲存空間。
   **怎麼查**:登入 ESXi 網頁介面 → 左側選單點 **Storage** → 右側清單裡「Name」那一欄,就是你要填的值。單機版沒自己額外接硬碟的話,通常就叫 `datastore1`;如果你自己命名過(例如 `SSD-Datastore`),照清單上顯示的打,**大小寫要完全一致**。
 - **`ESXI_NETWORK`** —— VM 的網路卡要接到哪一個 portgroup。
-  **怎麼查**:登入 ESXi 網頁介面 → 左側選單點 **Networking** → 切到 **Port groups** 分頁 → 「Name」那一欄就是你要填的值。單機版預設通常叫 `VM Network`(中間有空格,所以範例裡用雙引號包起來——這點很重要,`.env` 是被 `source` 讀的,值有空格沒加引號會直接出錯)。
+  **怎麼查**:登入 ESXi 網頁介面 → 左側選單點 **Networking** → 切到 **Port groups** 分頁 → 「Name」那一欄就是你要填的值。單機版預設通常叫 `VM Network`(中間有空格,所以範例裡加了引號——這點很重要,`.env` 是被 `source` 讀的,值有空格沒加引號會直接出錯)。
 - **`ESXI_VALIDATE_CERTS`** —— 要不要驗證 ESXi 的 TLS 憑證。保持 `false` 就好:ESXi 預設是自簽憑證(瀏覽器登入時跳出「連線不安全」警告的那張憑證),設 `false` 才能讓 Ansible 正常連線,不會因為憑證不是正式 CA 簽發就直接拒絕連線。
 
 填完之後,`custom/.env` 應該長得跟上面範例結構一樣,只是數值換成你自己 ESXi 的真實資訊。
