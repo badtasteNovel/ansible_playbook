@@ -20,5 +20,5 @@ tasks:
   default:
     desc: "安裝開發這個專案所需的所有工具"
     cmds:
-      - task: install:ansible
-      - task: install:iso-tools
+      - task: ansible
+      - task: iso-tools
