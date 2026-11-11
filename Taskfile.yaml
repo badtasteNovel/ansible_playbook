@@ -34,4 +34,4 @@ tasks:
         source custom/.env
         set +a
         iso_path=$(task select-iso)
-        ansible-playbook build-debian-vm.yml --extra-vars "iso_path=${iso_path}"
+        ansible-playbook build_vm/debian.yml --extra-vars "iso_path=${iso_path}"
