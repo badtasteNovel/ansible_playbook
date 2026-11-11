@@ -36,3 +36,5 @@ tasks:
         source custom/.env
         set +a
         ssh "${ESXI_USERNAME}@${ESXI_HOSTNAME}" esxcli system hostname get
+        echo
+        echo "請把上面「Fully Qualified Domain Name」那一行的值，複製填進 custom/.env 的 ESXI_INVENTORY_NAME"
