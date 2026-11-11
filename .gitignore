@@ -1,7 +1,6 @@
 # custom/iso/ 自己有獨立的 .gitignore 管 ISO 本體，這裡不用重複管
 
 # playbook 執行時產生的東西（客製化 ISO、preseed.cfg 等），跟 custom/iso/ 來源分開放
-custom/generated/
 
 # ESXi 連線密碼等機密，只保留 custom/.env.example 當範本
 custom/.env
