@@ -20,6 +20,7 @@
 
     ssh_key_dir: "{{ playbook_dir }}/../custom/keys"
     ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519"
+    known_hosts_path: "{{ ssh_key_dir }}/known_hosts"
 
     generated_dir: "{{ playbook_dir }}/../custom/generated"
     preseed_output_dir: "{{ generated_dir }}/preseed"
@@ -127,6 +128,9 @@
         cdrom:
           - type: iso
             iso_path: "[{{ esxi_datastore }}] {{ datastore_iso_path }}"
+            controller_type: ide
+            controller_number: 0
+            unit_number: 0
         networks:
           - name: "{{ esxi_network }}"
             type: dhcp
@@ -171,8 +175,19 @@
         port: 22
         timeout: 300
 
+    - name: 掃描並記錄 VM 的 SSH host key，之後連線不用手動確認 fingerprint
+      ansible.builtin.shell: |
+        set -euo pipefail
+        touch "{{ known_hosts_path }}"
+        ssh-keygen -R "{{ vm_info.instance.ipv4 }}" -f "{{ known_hosts_path }}" >/dev/null 2>&1 || true
+        ssh-keyscan -T 10 "{{ vm_info.instance.ipv4 }}" >> "{{ known_hosts_path }}"
+      changed_when: true
+
     - name: 印出新 VM 的連線資訊
       ansible.builtin.debug:
-        msg: >-
-          VM {{ vm_name }} 已安裝完成，IP：{{ vm_info.instance.ipv4 }}，
-          使用者：{{ vm_user }}，私鑰：{{ ssh_key_path }}
+        msg:
+          - "VM {{ vm_name }} 已安裝完成"
+          - "IP：{{ vm_info.instance.ipv4 }}"
+          - "使用者：{{ vm_user }}"
+          - "私鑰：{{ ssh_key_path }}"
+          - "known_hosts：{{ known_hosts_path }}"
