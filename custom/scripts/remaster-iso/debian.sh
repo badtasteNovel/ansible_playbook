@@ -64,6 +64,18 @@ for f in "$EXTRACT_DIR/isolinux/gtk.cfg" "$EXTRACT_DIR/isolinux/txt.cfg"; do
   fi
 done
 
+# 1c. Debian 安裝選單裡還有一個「無障礙/語音合成安裝」子選單（spkgtk.cfg），
+#     它自己又定義了一個 timeout 300（30 秒）+ ontimeout，而且 ontimeout 指向
+#     的開機列完全沒有 preseed 參數。menu.cfg 的 include 順序讓它排在最後面，
+#     所以它的 timeout/ontimeout 會蓋掉我們在 isolinux.cfg 設的值——實際效果
+#     就是卡 30 秒，逾時後還跳進語音合成安裝（探測音效卡畫面），永遠不會自動
+#     裝機。把 isolinux.cfg 以外所有 cfg 檔自己定義的 timeout/ontimeout 行拔掉，
+#     確保只有 isolinux.cfg 的設定生效。
+for f in "$EXTRACT_DIR"/isolinux/*.cfg; do
+  [ "$(basename "$f")" = "isolinux.cfg" ] && continue
+  sed -i '/^timeout /d; /^ontimeout /d' "$f"
+done
+
 # UEFI 開機選單（grub）：完全沒設 timeout/default，要自己補上，
 # 並且只改「第一個」menuentry（對應 `set default=0`），不要動到其他 19 個
 # rescue/語音/深色主題等選單項目
