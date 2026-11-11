@@ -1,0 +1,169 @@
+---
+# 注意：community.vmware 的參數/回傳欄位名稱是依一般慣例寫的，
+# 實際跑之前請用 `ansible-doc community.vmware.<module>` 對照已安裝版本確認一次，
+# 尤其是 vmware_guest_boot_manager、vsphere_copy 的 datastore 路徑格式、
+# vmware_guest_info 回傳的 IP 欄位名稱 —— 這幾個沒有真實 ESXi 環境測不出來。
+
+- name: 在 ESXi 上建立並無人值守安裝一台 Debian VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    vm_name: debian-vm
+    vm_user: charlie
+    vm_cpus: 2
+    vm_memory_mb: 2048
+    vm_disk_gb: 20
+    vm_guest_id: debian11_64Guest # 若 ESXi 版本已支援，可改成 debian12_64Guest
+
+    ssh_key_dir: "{{ playbook_dir }}/../keys"
+    ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519"
+
+    preseed_output_dir: "{{ playbook_dir }}/../iso/_generated"
+    preseed_output_iso: "{{ preseed_output_dir }}/{{ vm_name }}-preseed.iso"
+    datastore_iso_path: "iso/{{ vm_name }}-preseed.iso"
+
+    esxi_hostname: "{{ lookup('env', 'ESXI_HOSTNAME') }}"
+    esxi_username: "{{ lookup('env', 'ESXI_USERNAME') }}"
+    esxi_password: "{{ lookup('env', 'ESXI_PASSWORD') }}"
+    esxi_datastore: "{{ lookup('env', 'ESXI_DATASTORE') }}"
+    esxi_network: "{{ lookup('env', 'ESXI_NETWORK') }}"
+    esxi_validate_certs: "{{ lookup('env', 'ESXI_VALIDATE_CERTS') | default('false') }}"
+    esxi_datacenter: ha-datacenter # 單台 ESXi（無 vCenter）的固定虛擬 datacenter 名稱
+
+  tasks:
+    - name: 確認必要變數都有值
+      ansible.builtin.assert:
+        that:
+          - iso_path is defined
+          - esxi_hostname | length > 0
+          - esxi_username | length > 0
+          - esxi_password | length > 0
+          - esxi_datastore | length > 0
+          - esxi_network | length > 0
+        fail_msg: >-
+          請確認 .env 已填好必要連線資訊，且透過 --extra-vars 傳入
+          iso_path（task select-iso 的輸出路徑）
+
+    - name: 確保 keys/、iso/_generated/ 目錄存在
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ ssh_key_dir }}"
+        - "{{ preseed_output_dir }}"
+
+    - name: 產生 SSH 金鑰對（若已存在則不重建）
+      community.crypto.openssh_keypair:
+        path: "{{ ssh_key_path }}"
+        type: ed25519
+        comment: "{{ vm_user }}@{{ vm_name }}"
+
+    - name: 讀取公鑰內容
+      ansible.builtin.slurp:
+        src: "{{ ssh_key_path }}.pub"
+      register: ssh_public_key_raw
+
+    - name: 渲染 preseed.cfg
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/debian_preseed_iso/templates/preseed.cfg.j2"
+        dest: "{{ preseed_output_dir }}/preseed.cfg"
+        mode: "0600"
+      vars:
+        vm_hostname: "{{ vm_name }}"
+        ssh_public_key: "{{ (ssh_public_key_raw.content | b64decode).strip() }}"
+
+    - name: 重新封裝 ISO，塞入 preseed.cfg 並改開機參數
+      ansible.builtin.command:
+        cmd: >
+          {{ playbook_dir }}/../scripts/remaster-iso.sh
+          {{ iso_path }}
+          {{ preseed_output_dir }}/preseed.cfg
+          {{ preseed_output_iso }}
+      args:
+        creates: "{{ preseed_output_iso }}"
+
+    - name: 把客製化 ISO 上傳到 ESXi datastore
+      community.vmware.vsphere_copy:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: "{{ esxi_validate_certs }}"
+        datacenter: "{{ esxi_datacenter }}"
+        datastore: "{{ esxi_datastore }}"
+        src: "{{ preseed_output_iso }}"
+        path: "{{ datastore_iso_path }}"
+
+    - name: 在 ESXi 上建立 VM（先不開機）
+      community.vmware.vmware_guest:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: "{{ esxi_validate_certs }}"
+        datacenter: "{{ esxi_datacenter }}"
+        name: "{{ vm_name }}"
+        guest_id: "{{ vm_guest_id }}"
+        state: present
+        folder: /
+        hardware:
+          num_cpus: "{{ vm_cpus }}"
+          memory_mb: "{{ vm_memory_mb }}"
+        disk:
+          - size_gb: "{{ vm_disk_gb }}"
+            type: thin
+            datastore: "{{ esxi_datastore }}"
+        cdrom:
+          - type: iso
+            iso_path: "[{{ esxi_datastore }}] {{ datastore_iso_path }}"
+        networks:
+          - name: "{{ esxi_network }}"
+            type: dhcp
+
+    - name: 設定開機順序：CD-ROM 優先（確保走無人值守安裝）
+      community.vmware.vmware_guest_boot_manager:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: "{{ esxi_validate_certs }}"
+        datacenter: "{{ esxi_datacenter }}"
+        name: "{{ vm_name }}"
+        boot_order:
+          - cdrom
+          - disk
+
+    - name: 開機，進入無人值守安裝
+      community.vmware.vmware_guest:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: "{{ esxi_validate_certs }}"
+        datacenter: "{{ esxi_datacenter }}"
+        name: "{{ vm_name }}"
+        state: poweredon
+
+    - name: 等待安裝完成並由 VMware Tools 回報 IP（可能要 10～20 分鐘）
+      community.vmware.vmware_guest_info:
+        hostname: "{{ esxi_hostname }}"
+        username: "{{ esxi_username }}"
+        password: "{{ esxi_password }}"
+        validate_certs: "{{ esxi_validate_certs }}"
+        datacenter: "{{ esxi_datacenter }}"
+        name: "{{ vm_name }}"
+      register: vm_info
+      until: vm_info.instance.ipv4 is defined and vm_info.instance.ipv4 | length > 0
+      retries: 120
+      delay: 15
+
+    - name: 等待 SSH 服務可連線
+      ansible.builtin.wait_for:
+        host: "{{ vm_info.instance.ipv4 }}"
+        port: 22
+        timeout: 300
+
+    - name: 印出新 VM 的連線資訊
+      ansible.builtin.debug:
+        msg: >-
+          VM {{ vm_name }} 已安裝完成，IP：{{ vm_info.instance.ipv4 }}，
+          使用者：{{ vm_user }}，私鑰：{{ ssh_key_path }}

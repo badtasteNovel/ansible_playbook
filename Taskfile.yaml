@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: '3'
+
+includes:
+  install: ./scripts/tasks/install.yaml
+
+tasks:
+  select-iso:
+    desc: "互動式選擇要使用的 ISO 檔案（印出選中檔案的路徑）"
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        name=$(jq -r 'keys[]' iso/manifest.json | gum choose --header "選擇要使用的 ISO")
+        filename=$(jq -r --arg k "$name" '.[$k]' iso/manifest.json)
+        iso_path="iso/$filename"
+        if [ ! -f "$iso_path" ]; then
+          echo "錯誤：找不到 $iso_path，請先把對應的 ISO 放進 iso/" >&2
+          exit 1
+        fi
+        echo "$iso_path"
+
+  build-debian-vm:
+    desc: "在 ESXi 上建立並無人值守安裝一台 Debian VM"
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        if [ ! -f .env ]; then
+          echo "錯誤：找不到 .env，先 cp .env.example .env 並填好真實值" >&2
+          exit 1
+        fi
+        set -a
+        source .env
+        set +a
+        iso_path=$(task select-iso)
+        ansible-playbook playbooks/build-debian-vm.yml --extra-vars "iso_path=${iso_path}"

@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: '3'
+
+tasks:
+  ansible:
+    desc: "安裝 ansible-core 與必要的 collections"
+    silent: true
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y ansible
+      - ansible-galaxy collection install -r requirements.yml
+
+  iso-tools:
+    desc: "安裝重新封裝 ISO（preseed 注入）所需的工具"
+    silent: true
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y xorriso
+
+  default:
+    desc: "安裝開發這個專案所需的所有工具"
+    cmds:
+      - task: install:ansible
+      - task: install:iso-tools
