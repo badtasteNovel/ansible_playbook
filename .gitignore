@@ -1,7 +1,4 @@
 # ISO 本體不進版控，只保留 manifest.json 和目錄
-iso/*.iso
-iso/*.img
-iso/_generated/
 
 # ESXi 連線密碼等機密，只保留 .env.example 當範本
 .env
