@@ -15,7 +15,7 @@ tasks:
     silent: true
     cmds:
       - sudo apt-get update
-      - sudo apt-get install -y xorriso
+      - sudo apt-get install -y xorriso isolinux
 
   gum:
     desc: "安裝 gum（互動式選單用），走 Charm 官方 apt repo"
