@@ -22,7 +22,7 @@ Ansible's own documented project layout (inventory, `group_vars/`, `host_vars/`,
 ## Commands
 
 - `task --list` — list available tasks
-- `task install` — install local tooling; runs `install:default` from the included `install` namespace, which calls `install:ansible` (ansible-core + collections from `requirements.yml`) and `install:iso-tools` (`xorriso`)
+- `task install` — install local tooling; runs `install:default` from the included `install` namespace, which calls `install:ansible` (ansible-core + collections from `requirements.yml` + `python3-pyvmomi`, the Python library `community.vmware` needs to talk to the vSphere API — collections don't auto-install their own Python deps), `install:iso-tools` (`xorriso`, `isolinux`), `install:gum`, and `install:jq`
 - `task select-iso` — interactively pick an OS registered in `custom/iso/manifest.json` (via `gum choose`), prints the resolved ISO path; fails if the file isn't actually present under `custom/iso/`
 - `task build:debian` — sources `custom/.env`, looks up `manifest.json`'s `debian` entry (`iso-path` + `build-path`) directly (no interactive prompt — the task name already says which OS), then runs `ansible-playbook <build-path>` with the resolved ISO path
 

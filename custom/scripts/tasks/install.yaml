@@ -7,7 +7,7 @@ tasks:
     silent: true
     cmds:
       - sudo apt-get update
-      - sudo apt-get install -y ansible
+      - sudo apt-get install -y ansible python3-pyvmomi
       - ansible-galaxy collection install -r requirements.yml
 
   iso-tools:
