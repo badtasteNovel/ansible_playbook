@@ -7,6 +7,23 @@ numvcpus = "{{ vm_cpus }}"
 memsize = "{{ vm_memory_mb }}"
 firmware = "bios"
 
+# virtualHW 10/11 之後，裝置要掛在 PCIe root port 上，ESXi 自己的建立精靈
+# 會自動補這段；手寫 .vmx 沒有這段的話，scsi0 會找不到可用插槽，
+# Power On 直接失敗（DevicePowerOn / No available PCIe slot for scsi0）
+pciBridge0.present = "TRUE"
+pciBridge4.present = "TRUE"
+pciBridge4.virtualDev = "pcieRootPort"
+pciBridge4.functions = "8"
+pciBridge5.present = "TRUE"
+pciBridge5.virtualDev = "pcieRootPort"
+pciBridge5.functions = "8"
+pciBridge6.present = "TRUE"
+pciBridge6.virtualDev = "pcieRootPort"
+pciBridge6.functions = "8"
+pciBridge7.present = "TRUE"
+pciBridge7.virtualDev = "pcieRootPort"
+pciBridge7.functions = "8"
+
 scsi0.present = "TRUE"
 scsi0.virtualDev = "pvscsi"
 scsi0:0.present = "TRUE"
