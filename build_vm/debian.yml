@@ -15,7 +15,8 @@
     vm_cpus: 2
     vm_memory_mb: 2048
     vm_disk_gb: 20
-    vm_guest_id: debian11_64Guest # 若 ESXi 版本已支援，可改成 debian12_64Guest
+    vm_guest_id: debian12_64Guest # Debian 13（trixie）目前沒有專屬的 guest_id，沿用最新的 debian12_64Guest；
+                                  # 若裝好的 ESXi 版本已經支援 debian13_64Guest，改成那個會更準確
 
     ssh_key_dir: "{{ playbook_dir }}/../custom/keys"
     ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519"

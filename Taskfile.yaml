@@ -3,6 +3,7 @@ version: '3'
 
 includes:
   install: ./custom/scripts/tasks/install.yaml
+  verify-iso: ./custom/scripts/tasks/verify-iso.yaml
 
 tasks:
   select-iso:

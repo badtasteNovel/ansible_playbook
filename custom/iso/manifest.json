@@ -1,3 +1,3 @@
 {
-  "debian": "debian-12.8.0-amd64-netinst.iso"
+  "debian": "debian/debian-13.7.0-amd64-netinst.iso"
 }

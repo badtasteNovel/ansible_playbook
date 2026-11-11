@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: '3'
+
+tasks:
+  default:
+    desc: "互動式選擇 OS，驗證對應的 ISO 是不是官方未竄改版本"
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        os=$(jq -r 'keys[]' custom/iso/manifest.json | gum choose --header "選擇要驗證的 ISO")
+        filename=$(jq -r --arg k "$os" '.[$k]' custom/iso/manifest.json)
+        iso_path="custom/iso/$filename"
+        if [ ! -f "$iso_path" ]; then
+          echo "錯誤：找不到 $iso_path，請先把對應的 ISO 放進 custom/iso/" >&2
+          exit 1
+        fi
+        case "$os" in
+          debian)
+            custom/scripts/verify-iso/debian.sh "$iso_path"
+            ;;
+          *)
+            echo "錯誤：還沒有對應 \"$os\" 的驗證腳本（custom/scripts/verify-iso/ 底下目前只有 debian.sh）" >&2
+            exit 1
+            ;;
+        esac
