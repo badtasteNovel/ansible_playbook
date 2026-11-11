@@ -25,6 +25,7 @@
     vm_cpus: 2
     vm_memory_mb: 2048
     vm_disk_gb: 20
+    vm_ssh_port: 52222 # 不用預設 22，躲開公開掃描，也避開跟其他服務（例如之後可能裝的 Kubernetes/Cilium）的 port 衝突
 
     ssh_key_dir: "{{ playbook_dir }}/../custom/keys"
     ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519" # VM 上 charlie 登入用的 client 金鑰
@@ -117,6 +118,7 @@
       vars:
         vm_hostname: "{{ vm_name }}"
         ssh_public_key: "{{ (ssh_public_key_raw.content | b64decode).strip() }}"
+        ssh_port: "{{ vm_ssh_port }}"
 
     - name: 重新封裝 ISO，塞入 preseed.cfg、host key 並改開機參數
       ansible.builtin.command:
@@ -177,11 +179,12 @@
     - name: 印出後續手動步驟需要的資訊
       ansible.builtin.debug:
         msg:
-          - "VM 相關檔案都已經上傳完成，接下來要手動做："
+          - "VM 相關檔案都已經上傳完成，接下來要手動做（這幾步是 ESXi Host Client 專屬操作，換平台要重寫）："
           - "1. 登入 Host Client，瀏覽 datastore 到 {{ datastore_vmx_path }}，Register VM"
           - "2. 手動 Power On"
           - "3. 開機、preseed 無人值守安裝跑完後，自己查一下 VM 的 IP"
-          - "4. 把下面這行加上 IP 貼到 {{ known_hosts_path }}（host key 是我們自己產生的，已知道內容，不用再掃描）："
-          - "<VM 的 IP> {{ (ssh_host_public_key_raw.content | b64decode).strip() }}"
+          - "4. SSH port 不是預設的 22，是 {{ vm_ssh_port }}。把下面這行的 [vm的ip] 換成實際 IP，整行貼到 {{ known_hosts_path }}（host key 是我們自己產生的，已知道內容，不用再掃描）："
+          - "[vm的ip]:{{ vm_ssh_port }} {{ (ssh_host_public_key_raw.content | b64decode).strip() }}"
           - "使用者：{{ vm_user }}"
           - "私鑰：{{ ssh_key_path }}"
+          - "連線範例：ssh -i {{ ssh_key_path }} -p {{ vm_ssh_port }} -o UserKnownHostsFile={{ known_hosts_path }} {{ vm_user }}@<VM的IP>"

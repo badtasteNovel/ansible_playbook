@@ -67,6 +67,8 @@ d-i preseed/late_command string \
   chmod 600 /target/home/{{ vm_user }}/.ssh/authorized_keys; \
   in-target chown -R {{ vm_user }}:{{ vm_user }} /home/{{ vm_user }}/.ssh; \
   sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /target/etc/ssh/sshd_config; \
+  sed -i '/^Port /d' /target/etc/ssh/sshd_config; \
+  echo 'Port {{ ssh_port }}' >> /target/etc/ssh/sshd_config; \
   echo '{{ vm_user }} ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/{{ vm_user }}; \
   chmod 440 /target/etc/sudoers.d/{{ vm_user }}; \
   cp /cdrom/ssh_host_key /target/etc/ssh/ssh_host_ed25519_key; \

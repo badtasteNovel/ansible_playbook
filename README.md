@@ -31,11 +31,31 @@ task install
 2. 把 Debian ISO 放進 `custom/iso/debian/`(檔名對照 `custom/iso/manifest.json`)
 3. `task verify-iso` —— 驗證這顆 ISO 是官方未竄改的版本(細節見腳本註解,全程即時向 `debian.org` 官方來源核對,不信任任何本地快取的金鑰)
 4. `cp custom/.env.example custom/.env`,照下面的說明把值填好
-5. `task build:debian` —— 產生 client/host 兩組 SSH 金鑰 → 渲染 preseed.cfg → 重新封裝 ISO → 渲染 `.vmx` → SSH 上傳 ISO、`.vmx` 到 datastore、用 `vmkfstools` 建虛擬磁碟。跑完會印出接下來要手動做的事:
-   1. 登入 Host Client,瀏覽 datastore 找到那個 `.vmx`,**Register VM**
-   2. 手動 **Power On**(preseed 會全自動跑完安裝,不用再管它)
-   3. 裝完之後自己查一下 VM 的 IP(它走 DHCP,IP 不是固定的)
-   4. 把輸出訊息裡那行 `<IP> ssh-ed25519 ...` 填上實際 IP,貼進 `custom/keys/known_hosts`——host key 是我們自己預先產生、裝機時用 `late_command` 寫進去的,不是 VM 自己隨機生成的,所以裝機前就已經知道 fingerprint,不需要再對 VM 做 `ssh-keyscan`
+5. `task build:debian` —— 產生 client/host 兩組 SSH 金鑰 → 渲染 preseed.cfg → 重新封裝 ISO → 渲染 `.vmx` → SSH 上傳 ISO、`.vmx` 到 datastore、用 `vmkfstools` 建虛擬磁碟。跑完之後還有幾個手動步驟,見下面「VM 建好之後怎麼辦」。
+
+## VM 建好之後怎麼辦
+
+`task build:debian` 做到「檔案都上傳好」就結束了——**不會自動 Register VM、不會自動開機**,這是刻意的(見上面「這個專案在做什麼」的說明,自動化完全不碰 ESXi 的管理層)。跑完之後終端機會印出一段提示,內容跟下面一樣,照著做:
+
+1. **登入 ESXi 的 Host Client 網頁介面**,瀏覽 datastore,找到 `/vmfs/volumes/<你的 datastore>/debian-vm/debian-vm.vmx`,右鍵 **Register VM**
+2. 手動 **Power On**——preseed 會全自動跑完整個安裝,不用再管它,等個幾分鐘
+3. 裝完之後,自己去 VM 的 Console 畫面查一下它的 IP(走 DHCP,不是固定的)
+4. **SSH port 不是預設的 22,是 `52222`**(躲開公開掃描,也避開跟其他服務的 port 衝突,見 `build_vm/debian.yml` 的 `vm_ssh_port`)。把輸出訊息裡 `[vm的ip]` 換成實際 IP,整行貼進 `custom/keys/known_hosts`。例如輸出是:
+   ```
+   [vm的ip]:52222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEm0+nrgRT6SyzX2uMXULQtLavs1MkrIqkfHpZgvVHNO debian-vm
+   ```
+   查到 IP 是 `192.168.1.50`,就把這一行貼進 `custom/keys/known_hosts`:
+   ```
+   [192.168.1.50]:52222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEm0+nrgRT6SyzX2uMXULQtLavs1MkrIqkfHpZgvVHNO debian-vm
+   ```
+   中括號、冒號、port 都要照抄——這是 OpenSSH 在非預設 port 時的 `known_hosts` 固定寫法。這把 host key 是我們自己預先產生、裝機時用 preseed 的 `late_command` 寫進 VM 裡的,不是 VM 自己隨機生成的——所以裝機前就已經知道完整內容,不需要等 VM 開機、SSH 服務起來之後再對它做 `ssh-keyscan`。
+
+5. 之後就能直接連線:
+   ```
+   ssh -i custom/keys/charlie_ed25519 -p 52222 -o UserKnownHostsFile=custom/keys/known_hosts charlie@<VM 的 IP>
+   ```
+
+**注意**:第 1、2 步(Register VM、Host Client)是 **ESXi 專屬操作**,因為目前整套方案是建立在 `.vmx`/`vmkfstools` 這些 VMware 專有格式跟工具上。以後如果換成別的虛擬化平台,這幾步跟對應的 playbook 都要重寫成那個平台的版本。
 
 ## `custom/.env` 要填什麼
 
