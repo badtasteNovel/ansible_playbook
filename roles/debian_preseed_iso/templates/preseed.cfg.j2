@@ -56,7 +56,10 @@ d-i grub-installer/bootdev string default
 ### Finishing installation
 d-i finish-install/reboot_in_progress note
 
-### Late command — 寫入 SSH 公鑰、關閉密碼登入、開 NOPASSWD sudo（反正沒有密碼可輸入）
+### Late command — 寫入 SSH 公鑰、關閉密碼登入、開 NOPASSWD sudo（反正沒有密碼可輸入）、
+### 換掉 openssh-server 自動生成的 host key，改用控制端預先產生好的那一組
+### （/cdrom/ssh_host_key、/cdrom/ssh_host_key.pub 是 remaster-iso.sh 塞進 ISO 根目錄的檔案，
+### 用複製檔案而不是在這裡塞金鑰內容，是為了避開私鑰裡的換行在這種單行 shell 指令字串裡轉義的問題）
 d-i preseed/late_command string \
   mkdir -p /target/home/{{ vm_user }}/.ssh; \
   echo '{{ ssh_public_key }}' > /target/home/{{ vm_user }}/.ssh/authorized_keys; \
@@ -65,4 +68,9 @@ d-i preseed/late_command string \
   in-target chown -R {{ vm_user }}:{{ vm_user }} /home/{{ vm_user }}/.ssh; \
   sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /target/etc/ssh/sshd_config; \
   echo '{{ vm_user }} ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/{{ vm_user }}; \
-  chmod 440 /target/etc/sudoers.d/{{ vm_user }}
+  chmod 440 /target/etc/sudoers.d/{{ vm_user }}; \
+  cp /cdrom/ssh_host_key /target/etc/ssh/ssh_host_ed25519_key; \
+  cp /cdrom/ssh_host_key.pub /target/etc/ssh/ssh_host_ed25519_key.pub; \
+  chmod 600 /target/etc/ssh/ssh_host_ed25519_key; \
+  chmod 644 /target/etc/ssh/ssh_host_ed25519_key.pub; \
+  chown root:root /target/etc/ssh/ssh_host_ed25519_key /target/etc/ssh/ssh_host_ed25519_key.pub

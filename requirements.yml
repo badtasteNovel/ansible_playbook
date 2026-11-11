@@ -1,9 +1,4 @@
 ---
 collections:
-  # >=7.0.0：舊版對新版 pyvmomi（>=8.x）的 VmomiJSONEncoder 偵測寫法有問題，
-  # 會撞到 pyVmomi.VmomiSupport.VmomiJSONEncoder 這個故意會噴錯的相容性假殼，
-  # 建 VM 時 gather_vm_facts 直接炸掉；7.0.0 改成直接 import 正確位置
-  - name: community.vmware
-    version: ">=7.0.0"
   - name: community.crypto
   - name: ansible.posix

@@ -1,10 +1,20 @@
 ---
-# 注意：community.vmware 的參數/回傳欄位名稱是依一般慣例寫的，
-# 實際跑之前請用 `ansible-doc community.vmware.<module>` 對照已安裝版本確認一次，
-# 尤其是 vmware_guest_boot_manager、vsphere_copy 的 datastore 路徑格式、
-# vmware_guest_info 回傳的 IP 欄位名稱 —— 這幾個沒有真實 ESXi 環境測不出來。
+# 這支 playbook 完全不透過 vSphere/ESXi API（不裝 pyvmomi、不用 community.vmware），
+# 只靠純 SSH + scp + ESXi 自己的本地 CLI 工具（vmkfstools）：
+#   1. 產生兩組 SSH 金鑰：client 端（charlie 登入用）跟 VM 自己的 host key
+#      （host key 預先產生、透過 ISO 塞進去蓋掉 openssh-server 開機時自動生成的那組，
+#      這樣 fingerprint 在裝機前就已經知道，不用等 VM 開機、SSH 起來才去 scan）
+#   2. 渲染 preseed.cfg、重新封裝 ISO（跟之前一樣，remaster-iso.sh 完全沒變邏輯）
+#   3. 渲染 .vmx
+#   4. SSH 進 hypervisor：建資料夾、scp 傳 ISO、scp 傳 .vmx、用 vmkfstools 建虛擬磁碟
+#
+# 到這裡自動化就結束——VM 的「註冊」（register）跟「開機」刻意留給人工在 Host Client
+# 網頁介面上做，自動化程式碼完全不碰 ESXi 的管理層（inventory）。
+#
+# 注意：.vmx 檔案格式、vmkfstools 語法是依 VMware 官方文件的一般知識寫的，
+# 沒有真實 ESXi 環境測過，實際跑之前請注意。
 
-- name: 在 ESXi 上建立並無人值守安裝一台 Debian VM
+- name: 產生 Debian VM 所需的所有檔案，上傳到 hypervisor 的 datastore
   hosts: localhost
   connection: local
   gather_facts: false
@@ -15,42 +25,44 @@
     vm_cpus: 2
     vm_memory_mb: 2048
     vm_disk_gb: 20
-    vm_guest_id: debian12_64Guest # Debian 13（trixie）目前沒有專屬的 guest_id，沿用最新的 debian12_64Guest；
-                                  # 若裝好的 ESXi 版本已經支援 debian13_64Guest，改成那個會更準確
 
     ssh_key_dir: "{{ playbook_dir }}/../custom/keys"
-    ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519"
-    known_hosts_path: "{{ ssh_key_dir }}/known_hosts"
+    ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519" # VM 上 charlie 登入用的 client 金鑰
+    ssh_host_key_path: "{{ ssh_key_dir }}/{{ vm_name }}_host_ed25519" # VM 自己的 host key
+    hypervisor_known_hosts_path: "{{ ssh_key_dir }}/hypervisor_known_hosts"
+    known_hosts_path: "{{ ssh_key_dir }}/known_hosts" # 之後手動把 VM 的 IP 補進這個檔案
 
     generated_dir: "{{ playbook_dir }}/../custom/generated"
-    preseed_output_dir: "{{ generated_dir }}/preseed"
-    iso_output_dir: "{{ generated_dir }}/iso"
+    preseed_output_dir: "{{ generated_dir }}/preseed/{{ vm_name }}" # 存放要塞進 ISO 的所有檔案（preseed.cfg + host key）
+    iso_output_dir: "{{ generated_dir }}/iso/{{ vm_name }}"
     preseed_output_iso: "{{ iso_output_dir }}/{{ vm_name }}-preseed.iso"
-    datastore_iso_path: "iso/{{ vm_name }}-preseed.iso"
+    vmx_output_path: "{{ iso_output_dir }}/{{ vm_name }}.vmx"
 
-    esxi_hostname: "{{ lookup('env', 'ESXI_HOSTNAME') }}"
-    esxi_username: "{{ lookup('env', 'ESXI_USERNAME') }}"
-    esxi_password: "{{ lookup('env', 'ESXI_PASSWORD') }}"
-    esxi_datastore: "{{ lookup('env', 'ESXI_DATASTORE') }}"
-    esxi_network: "{{ lookup('env', 'ESXI_NETWORK') }}"
-    esxi_validate_certs: "{{ lookup('env', 'ESXI_VALIDATE_CERTS') | default('false') }}"
-    esxi_datacenter: ha-datacenter # 單台 ESXi（無 vCenter）的固定虛擬 datacenter 名稱
-    # esxi_hostname 是用來連線的 IP／位址；vmware_guest 建 VM 時要指定「放在哪台
-    # host 上」，認的是 ESXi 自己在 inventory 裡登記的名字，不一定跟連線位址一樣，
-    # 所以要另外一個變數，不能直接重複用 esxi_hostname
-    esxi_inventory_name: "{{ lookup('env', 'ESXI_INVENTORY_NAME') }}"
+    datastore_vm_dir: "/vmfs/volumes/{{ hypervisor_datastore }}/{{ vm_name }}"
+    datastore_iso_path: "{{ datastore_vm_dir }}/{{ vm_name }}-preseed.iso"
+    datastore_vmx_path: "{{ datastore_vm_dir }}/{{ vm_name }}.vmx"
+    datastore_vmdk_path: "{{ datastore_vm_dir }}/{{ vm_name }}.vmdk"
+
+    hypervisor_hostname: "{{ lookup('env', 'HYPERVISOR_HOSTNAME') }}"
+    hypervisor_username: "{{ lookup('env', 'HYPERVISOR_USERNAME') }}"
+    hypervisor_password: "{{ lookup('env', 'HYPERVISOR_PASSWORD') }}"
+    hypervisor_datastore: "{{ lookup('env', 'HYPERVISOR_DATASTORE') }}"
+    hypervisor_network: "{{ lookup('env', 'HYPERVISOR_NETWORK') }}"
+
+    ssh_opts: >-
+      -o StrictHostKeyChecking=accept-new
+      -o UserKnownHostsFile={{ hypervisor_known_hosts_path }}
 
   tasks:
     - name: 確認必要變數都有值
       ansible.builtin.assert:
         that:
           - iso_path is defined
-          - esxi_hostname | length > 0
-          - esxi_username | length > 0
-          - esxi_password | length > 0
-          - esxi_datastore | length > 0
-          - esxi_network | length > 0
-          - esxi_inventory_name | length > 0
+          - hypervisor_hostname | length > 0
+          - hypervisor_username | length > 0
+          - hypervisor_password | length > 0
+          - hypervisor_datastore | length > 0
+          - hypervisor_network | length > 0
         fail_msg: >-
           請確認 custom/.env 已填好必要連線資訊，且透過 --extra-vars 傳入
           iso_path（task select-iso 的輸出路徑）
@@ -65,16 +77,37 @@
         - "{{ preseed_output_dir }}"
         - "{{ iso_output_dir }}"
 
-    - name: 產生 SSH 金鑰對（若已存在則不重建）
+    - name: 產生 SSH 金鑰對（charlie 登入用，若已存在則不重建）
       community.crypto.openssh_keypair:
         path: "{{ ssh_key_path }}"
         type: ed25519
         comment: "{{ vm_user }}@{{ vm_name }}"
 
-    - name: 讀取公鑰內容
+    - name: 讀取 client 公鑰內容
       ansible.builtin.slurp:
         src: "{{ ssh_key_path }}.pub"
       register: ssh_public_key_raw
+
+    - name: 產生 VM 自己的 SSH host key（若已存在則不重建）
+      community.crypto.openssh_keypair:
+        path: "{{ ssh_host_key_path }}"
+        type: ed25519
+        comment: "{{ vm_name }}"
+
+    - name: 讀取 host key 公鑰內容（之後印出來給使用者填 known_hosts 用）
+      ansible.builtin.slurp:
+        src: "{{ ssh_host_key_path }}.pub"
+      register: ssh_host_public_key_raw
+
+    - name: 把 host key 複製進 ISO 注入資料夾（用複製檔案，不把金鑰內容塞進 late_command 字串）
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ preseed_output_dir }}/{{ item.dest }}"
+        remote_src: true
+        mode: "{{ item.mode }}"
+      loop:
+        - { src: "{{ ssh_host_key_path }}", dest: ssh_host_key, mode: "0600" }
+        - { src: "{{ ssh_host_key_path }}.pub", dest: ssh_host_key.pub, mode: "0644" }
 
     - name: 渲染 preseed.cfg
       ansible.builtin.template:
@@ -85,110 +118,70 @@
         vm_hostname: "{{ vm_name }}"
         ssh_public_key: "{{ (ssh_public_key_raw.content | b64decode).strip() }}"
 
-    - name: 重新封裝 ISO，塞入 preseed.cfg 並改開機參數
+    - name: 重新封裝 ISO，塞入 preseed.cfg、host key 並改開機參數
       ansible.builtin.command:
         cmd: >
           {{ playbook_dir }}/../custom/scripts/remaster-iso/debian.sh
           {{ iso_path }}
-          {{ preseed_output_dir }}/preseed.cfg
+          {{ preseed_output_dir }}
           {{ preseed_output_iso }}
       args:
         creates: "{{ preseed_output_iso }}"
 
-    - name: 把客製化 ISO 上傳到 ESXi datastore
-      community.vmware.vsphere_copy:
-        hostname: "{{ esxi_hostname }}"
-        username: "{{ esxi_username }}"
-        password: "{{ esxi_password }}"
-        validate_certs: "{{ esxi_validate_certs }}"
-        datacenter: "{{ esxi_datacenter }}"
-        datastore: "{{ esxi_datastore }}"
-        src: "{{ preseed_output_iso }}"
-        path: "{{ datastore_iso_path }}"
-        timeout: 1800 # 預設只有 10 秒，上傳將近 1GB 的 ISO 一定不夠，拉長到 30 分鐘
+    - name: 渲染 .vmx
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../roles/debian_preseed_iso/templates/debian.vmx.j2"
+        dest: "{{ vmx_output_path }}"
+        mode: "0600"
 
-    - name: 在 ESXi 上建立 VM（先不開機）
-      community.vmware.vmware_guest:
-        hostname: "{{ esxi_hostname }}"
-        username: "{{ esxi_username }}"
-        password: "{{ esxi_password }}"
-        validate_certs: "{{ esxi_validate_certs }}"
-        datacenter: "{{ esxi_datacenter }}"
-        name: "{{ vm_name }}"
-        esxi_hostname: "{{ esxi_inventory_name }}"
-        guest_id: "{{ vm_guest_id }}"
-        state: present
-        folder: "/{{ esxi_datacenter }}/vm"
-        hardware:
-          num_cpus: "{{ vm_cpus }}"
-          memory_mb: "{{ vm_memory_mb }}"
-        disk:
-          - size_gb: "{{ vm_disk_gb }}"
-            type: thin
-            datastore: "{{ esxi_datastore }}"
-        cdrom:
-          - type: iso
-            iso_path: "[{{ esxi_datastore }}] {{ datastore_iso_path }}"
-            controller_type: ide
-            controller_number: 0
-            unit_number: 0
-        networks:
-          - name: "{{ esxi_network }}"
-            type: dhcp
-
-    - name: 設定開機順序：CD-ROM 優先（確保走無人值守安裝）
-      community.vmware.vmware_guest_boot_manager:
-        hostname: "{{ esxi_hostname }}"
-        username: "{{ esxi_username }}"
-        password: "{{ esxi_password }}"
-        validate_certs: "{{ esxi_validate_certs }}"
-        name: "{{ vm_name }}"
-        boot_order:
-          - cdrom
-          - disk
-
-    - name: 開機，進入無人值守安裝
-      community.vmware.vmware_guest:
-        hostname: "{{ esxi_hostname }}"
-        username: "{{ esxi_username }}"
-        password: "{{ esxi_password }}"
-        validate_certs: "{{ esxi_validate_certs }}"
-        datacenter: "{{ esxi_datacenter }}"
-        name: "{{ vm_name }}"
-        state: poweredon
-
-    - name: 等待安裝完成並由 VMware Tools 回報 IP（可能要 10～20 分鐘）
-      community.vmware.vmware_guest_info:
-        hostname: "{{ esxi_hostname }}"
-        username: "{{ esxi_username }}"
-        password: "{{ esxi_password }}"
-        validate_certs: "{{ esxi_validate_certs }}"
-        datacenter: "{{ esxi_datacenter }}"
-        name: "{{ vm_name }}"
-      register: vm_info
-      until: (vm_info.instance.ipv4 | default('', true)) | length > 0
-      retries: 120
-      delay: 15
-
-    - name: 等待 SSH 服務可連線
-      ansible.builtin.wait_for:
-        host: "{{ vm_info.instance.ipv4 }}"
-        port: 22
-        timeout: 300
-
-    - name: 掃描並記錄 VM 的 SSH host key，之後連線不用手動確認 fingerprint
-      ansible.builtin.shell: |
-        set -euo pipefail
-        touch "{{ known_hosts_path }}"
-        ssh-keygen -R "{{ vm_info.instance.ipv4 }}" -f "{{ known_hosts_path }}" >/dev/null 2>&1 || true
-        ssh-keyscan -T 10 "{{ vm_info.instance.ipv4 }}" >> "{{ known_hosts_path }}"
+    - name: 確保 hypervisor datastore 上的 VM 資料夾存在
+      ansible.builtin.command:
+        cmd: >
+          sshpass -e ssh {{ ssh_opts }}
+          {{ hypervisor_username }}@{{ hypervisor_hostname }}
+          mkdir -p {{ datastore_vm_dir }}
+      environment:
+        SSHPASS: "{{ hypervisor_password }}"
       changed_when: true
 
-    - name: 印出新 VM 的連線資訊
+    - name: 把重新封裝好的 ISO 上傳到 datastore
+      ansible.builtin.command:
+        cmd: >
+          sshpass -e scp {{ ssh_opts }}
+          {{ preseed_output_iso }}
+          {{ hypervisor_username }}@{{ hypervisor_hostname }}:{{ datastore_iso_path }}
+      environment:
+        SSHPASS: "{{ hypervisor_password }}"
+      changed_when: true
+
+    - name: 把 .vmx 上傳到 datastore
+      ansible.builtin.command:
+        cmd: >
+          sshpass -e scp {{ ssh_opts }}
+          {{ vmx_output_path }}
+          {{ hypervisor_username }}@{{ hypervisor_hostname }}:{{ datastore_vmx_path }}
+      environment:
+        SSHPASS: "{{ hypervisor_password }}"
+      changed_when: true
+
+    - name: 用 vmkfstools 建立虛擬磁碟
+      ansible.builtin.command:
+        cmd: >
+          sshpass -e ssh {{ ssh_opts }}
+          {{ hypervisor_username }}@{{ hypervisor_hostname }}
+          vmkfstools -c {{ vm_disk_gb }}G -d thin {{ datastore_vmdk_path }}
+      environment:
+        SSHPASS: "{{ hypervisor_password }}"
+      changed_when: true
+
+    - name: 印出後續手動步驟需要的資訊
       ansible.builtin.debug:
         msg:
-          - "VM {{ vm_name }} 已安裝完成"
-          - "IP：{{ vm_info.instance.ipv4 }}"
+          - "VM 相關檔案都已經上傳完成，接下來要手動做："
+          - "1. 登入 Host Client，瀏覽 datastore 到 {{ datastore_vmx_path }}，Register VM"
+          - "2. 手動 Power On"
+          - "3. 開機、preseed 無人值守安裝跑完後，自己查一下 VM 的 IP"
+          - "4. 把下面這行加上 IP 貼到 {{ known_hosts_path }}（host key 是我們自己產生的，已知道內容，不用再掃描）："
+          - "<VM 的 IP> {{ (ssh_host_public_key_raw.content | b64decode).strip() }}"
           - "使用者：{{ vm_user }}"
           - "私鑰：{{ ssh_key_path }}"
-          - "known_hosts：{{ known_hosts_path }}"

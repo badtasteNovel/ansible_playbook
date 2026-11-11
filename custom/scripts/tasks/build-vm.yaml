@@ -12,7 +12,7 @@ tasks:
         task "build:$os"
 
   debian:
-    desc: "在 ESXi 上建立並無人值守安裝一台 Debian VM"
+    desc: "產生 Debian VM 的所有檔案（ISO、.vmx、金鑰）並上傳到 hypervisor，註冊/開機要自己手動做"
     silent: true
     cmds:
       - |

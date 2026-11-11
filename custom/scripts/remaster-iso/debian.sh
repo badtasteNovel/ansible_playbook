@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 把原始 Debian netinst ISO 解包、塞入 preseed.cfg、改開機參數後重新封裝成一顆新 ISO。
+# 把原始 Debian netinst ISO 解包、塞入 preseed.cfg（以及其他要注入的檔案，例如預先
+# 產生好的 SSH host key），改開機參數後重新封裝成一顆新 ISO。
 #
 # 開機自動化靠兩層修改：
 #   1. 把 preseed 參數加到實際會被自動選中的那個開機選單項目的 kernel append 行
@@ -12,15 +13,22 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 <source.iso> <preseed.cfg> <output.iso>" >&2
+  echo "Usage: $0 <source.iso> <extra_files_dir> <output.iso>" >&2
+  echo "  extra_files_dir 底下的每個檔案都會被複製到 ISO 根目錄" \
+    "（至少要有 preseed.cfg，late_command 裡用 /cdrom/<檔名> 存取其他檔案）" >&2
   exit 1
 }
 
 [ $# -eq 3 ] || usage
 
 SRC_ISO="$1"
-PRESEED="$2"
+EXTRA_FILES_DIR="$2"
 OUT_ISO="$3"
+
+if [ ! -f "$EXTRA_FILES_DIR/preseed.cfg" ]; then
+  echo "錯誤：$EXTRA_FILES_DIR 底下沒有 preseed.cfg" >&2
+  exit 1
+fi
 
 ISOHDPFX_BIN="/usr/lib/ISOLINUX/isohdpfx.bin"
 if [ ! -f "$ISOHDPFX_BIN" ]; then
@@ -38,7 +46,7 @@ mkdir -p "$EXTRACT_DIR"
 xorriso -indev "$SRC_ISO" -osirrox on -extract / "$EXTRACT_DIR"
 
 chmod -R u+w "$EXTRACT_DIR"
-cp "$PRESEED" "$EXTRACT_DIR/preseed.cfg"
+cp "$EXTRA_FILES_DIR"/* "$EXTRACT_DIR/"
 
 PRESEED_KARGS='auto=true priority=critical preseed/file=/cdrom/preseed.cfg'
 
