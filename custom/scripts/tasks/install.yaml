@@ -17,8 +17,27 @@ tasks:
       - sudo apt-get update
       - sudo apt-get install -y xorriso
 
+  gum:
+    desc: "安裝 gum（互動式選單用），走 Charm 官方 apt repo"
+    silent: true
+    cmds:
+      - sudo mkdir -p /etc/apt/keyrings
+      - sh -c "curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg"
+      - sh -c 'echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list'
+      - sudo apt-get update
+      - sudo apt-get install -y gum
+
+  jq:
+    desc: "安裝 jq（解析 manifest.json 用）"
+    silent: true
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y jq
+
   default:
     desc: "安裝開發這個專案所需的所有工具"
     cmds:
       - task: ansible
       - task: iso-tools
+      - task: gum
+      - task: jq
