@@ -1,0 +1,6 @@
+# 忽略此資料夾內的所有檔案
+*
+# 但不忽略 .gitignore 自己
+!manifest.json
+!.gitignore
+
