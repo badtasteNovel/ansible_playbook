@@ -21,8 +21,10 @@
     ssh_key_dir: "{{ playbook_dir }}/../custom/keys"
     ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519"
 
-    preseed_output_dir: "{{ playbook_dir }}/../custom/generated"
-    preseed_output_iso: "{{ preseed_output_dir }}/{{ vm_name }}-preseed.iso"
+    generated_dir: "{{ playbook_dir }}/../custom/generated"
+    preseed_output_dir: "{{ generated_dir }}/preseed"
+    iso_output_dir: "{{ generated_dir }}/iso"
+    preseed_output_iso: "{{ iso_output_dir }}/{{ vm_name }}-preseed.iso"
     datastore_iso_path: "iso/{{ vm_name }}-preseed.iso"
 
     esxi_hostname: "{{ lookup('env', 'ESXI_HOSTNAME') }}"
@@ -47,7 +49,7 @@
           請確認 custom/.env 已填好必要連線資訊，且透過 --extra-vars 傳入
           iso_path（task select-iso 的輸出路徑）
 
-    - name: 確保 custom/keys/、custom/generated/ 目錄存在
+    - name: 確保 custom/keys/、custom/generated/preseed/、custom/generated/iso/ 目錄存在
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -55,6 +57,7 @@
       loop:
         - "{{ ssh_key_dir }}"
         - "{{ preseed_output_dir }}"
+        - "{{ iso_output_dir }}"
 
     - name: 產生 SSH 金鑰對（若已存在則不重建）
       community.crypto.openssh_keypair:

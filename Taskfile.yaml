@@ -15,7 +15,7 @@ tasks:
         set -euo pipefail
         name=$(jq -r 'keys[]' custom/iso/manifest.json | gum choose --header "選擇要使用的 ISO")
         filename=$(jq -r --arg k "$name" '.[$k]["iso-path"]' custom/iso/manifest.json)
-        iso_path="custom/iso/$filename"
+        iso_path="$(pwd)/custom/iso/$filename"
         if [ ! -f "$iso_path" ]; then
           echo "錯誤：找不到 $iso_path，請先把對應的 ISO 放進 custom/iso/" >&2
           exit 1
