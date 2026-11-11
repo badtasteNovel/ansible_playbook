@@ -105,6 +105,7 @@
         datastore: "{{ esxi_datastore }}"
         src: "{{ preseed_output_iso }}"
         path: "{{ datastore_iso_path }}"
+        timeout: 1800 # 預設只有 10 秒，上傳將近 1GB 的 ISO 一定不夠，拉長到 30 分鐘
 
     - name: 在 ESXi 上建立 VM（先不開機）
       community.vmware.vmware_guest:
@@ -165,7 +166,7 @@
         datacenter: "{{ esxi_datacenter }}"
         name: "{{ vm_name }}"
       register: vm_info
-      until: vm_info.instance.ipv4 is defined and vm_info.instance.ipv4 | length > 0
+      until: (vm_info.instance.ipv4 | default('', true)) | length > 0
       retries: 120
       delay: 15
 
