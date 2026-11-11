@@ -4,6 +4,7 @@ version: '3'
 includes:
   install: ./custom/scripts/tasks/install.yaml
   verify-iso: ./custom/scripts/tasks/verify-iso.yaml
+  build: ./custom/scripts/tasks/build-vm.yaml
 
 tasks:
   select-iso:
@@ -13,26 +14,10 @@ tasks:
       - |
         set -euo pipefail
         name=$(jq -r 'keys[]' custom/iso/manifest.json | gum choose --header "選擇要使用的 ISO")
-        filename=$(jq -r --arg k "$name" '.[$k]' custom/iso/manifest.json)
+        filename=$(jq -r --arg k "$name" '.[$k]["iso-path"]' custom/iso/manifest.json)
         iso_path="custom/iso/$filename"
         if [ ! -f "$iso_path" ]; then
           echo "錯誤：找不到 $iso_path，請先把對應的 ISO 放進 custom/iso/" >&2
           exit 1
         fi
         echo "$iso_path"
-
-  build-debian-vm:
-    desc: "在 ESXi 上建立並無人值守安裝一台 Debian VM"
-    silent: true
-    cmds:
-      - |
-        set -euo pipefail
-        if [ ! -f custom/.env ]; then
-          echo "錯誤：找不到 custom/.env，先 cp custom/.env.example custom/.env 並填好真實值" >&2
-          exit 1
-        fi
-        set -a
-        source custom/.env
-        set +a
-        iso_path=$(task select-iso)
-        ansible-playbook build_vm/debian.yml --extra-vars "iso_path=${iso_path}"

@@ -29,7 +29,7 @@ task install
 2. 把 Debian ISO 放進 `custom/iso/debian/`(檔名對照 `custom/iso/manifest.json`)
 3. `task verify-iso` —— 驗證這顆 ISO 是官方未竄改的版本(細節見腳本註解,全程即時向 `debian.org` 官方來源核對,不信任任何本地快取的金鑰)
 4. `cp custom/.env.example custom/.env`,照下面的說明把值填好
-5. `task build-debian-vm` —— 跑完整流程:產生 SSH 金鑰 → 渲染 preseed.cfg → 重新封裝 ISO → 上傳到 ESXi datastore → 建 VM → 開機 → 等 VM 裝完、SSH 可連
+5. `task build:debian` —— 跑完整流程:產生 SSH 金鑰 → 渲染 preseed.cfg → 重新封裝 ISO → 上傳到 ESXi datastore → 建 VM → 開機 → 等 VM 裝完、SSH 可連
 
 ## `custom/.env` 要填什麼
 
