@@ -75,6 +75,26 @@ d-i finish-install/reboot_in_progress note
 ### parted/mkfs 手動切一個分割區、格式化成 ext4、寫進 /etc/fstab（用 UUID
 ### 不用裝置名稱，比較不會因為裝置列舉順序變動而掛錯）。開機後掛在
 ### vm_data_mount_path。
+###
+### parted 建完分割表之後，特意插了 partprobe + udevadm settle 才做
+### mkfs.ext4：parted 只是叫核心重讀分割表，/dev/sdb1 這個裝置節點是核心
+### 非同步透過 udev 才生出來的，中間有空窗期。late_command 的指令是用 ;
+### 串起來（不是 &&），任何一步失敗都不會中止、會繼續往下跑——在真實 ESXi
+### 上跑過一次，開機卡在「Timed out waiting for device .../by-uuid」掉進
+### emergency mode，最吻合的解釋就是這個 race：mkfs.ext4 在 /dev/sdb1 節點
+### 還沒出現時就跑了，直接失敗但沒中止，後面 blkid 查不到 UUID、吐出空
+### 字串，寫進 fstab 的是一行 UUID= 空值的紀錄，永遠對不到任何裝置，開機
+### 時死等那個裝置會一路等到 timeout——這個根因推論本身沒有另外重跑、單獨
+### 驗證過，只是目前能解釋觀察到的症狀、也是 parted 之後不等待就 mkfs 這個
+### 已知的一般性問題，先照這個理論修。
+###
+### fstab 選項也一定要帶 nofail：這台 VM 的 root 帳號整個被鎖死、沒有密碼
+### （見專案說明），只要這顆資料碟的掛載在開機當下沒有馬上成功（不管是上面
+### 這個 race 還是其他原因），沒有 nofail 的話 local-fs.target 會直接失敗，
+### 整台 VM 掉進連 root 都進不去的 emergency mode——等於直接把 VM 鎖死。
+### nofail 保留著是因為 partprobe/udevadm settle 修的是「已知的」那個 race，
+### 不代表保證未來不會再有其他原因讓這顆碟掛載失敗；這點跟網路（WireGuard）
+### 完全無關，純粹是本機掛載失敗也會造成一樣的死鎖，值得留一條保險。
 d-i preseed/late_command string \
   mkdir -p /target/home/{{ vm_user }}/.ssh; \
   echo 'from="{{ wireguard_peer_subnet }}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding {{ ssh_public_key }}' > /target/home/{{ vm_user }}/.ssh/authorized_keys; \
@@ -103,7 +123,9 @@ d-i preseed/late_command string \
   echo 'After=wg-quick@wg0.service' >> /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
   echo 'Requires=wg-quick@wg0.service' >> /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
   parted -s /dev/sdb mklabel gpt mkpart primary ext4 0% 100%; \
+  partprobe /dev/sdb; \
+  udevadm settle; \
   mkfs.ext4 -F /dev/sdb1; \
   mkdir -p /target{{ vm_data_mount_path }}; \
-  echo "UUID=$(blkid -s UUID -o value /dev/sdb1) {{ vm_data_mount_path }} ext4 defaults 0 2" >> /target/etc/fstab; \
+  echo "UUID=$(blkid -s UUID -o value /dev/sdb1) {{ vm_data_mount_path }} ext4 defaults,nofail 0 2" >> /target/etc/fstab; \
   true

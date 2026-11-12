@@ -88,7 +88,14 @@ tasks:
         # 分開傳好幾個 --extra-vars，不要塞進同一個用空白分隔的字串——Windows
         # 使用者名稱可能帶空白（例如 "John Doe"），空白分隔的 key=value 寫法
         # 在這種情況下會直接解析錯誤，每個各自用自己的引號包起來就沒事。
+        #
+        # --ask-become-pass：這支 playbook 是目前唯一一支會動到「執行 Ansible
+        # 這台機器自己」系統設定的 playbook（寫 /etc/wireguard/wg0.conf、
+        # wg-quick up 都要 become: true），如果這台機器的 sudo 不是 NOPASSWD，
+        # 沒有這個旗標 Ansible 會直接丟 "sudo: a password is required" 失敗；
+        # 這裡就是在本機跑、本來就能互動，問一次密碼很合理，不需要額外存起來。
         ansible-playbook playbook/wsl/add-peer.yml \
+          --ask-become-pass \
           --extra-vars "vm_endpoint_ip=${vm_ip}" \
           --extra-vars "windows_home_path=${windows_home_path}" \
           --extra-vars "windows_conf_path=${windows_conf_path}" \
