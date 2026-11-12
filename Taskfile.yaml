@@ -31,3 +31,34 @@ tasks:
         if gum confirm --default=false "確定刪除所有keys"; then
           git clean -fdX custom/generated/keys
         fi
+
+  add-peer:
+    desc: "把目前這台機器加進 debian-vm 的 WireGuard 點對點網路（VM 要先建好、開機、知道它的 IP 才能跑這個）"
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        # 故意跟 build:debian 分開成獨立的 task：VM 的 IP 是 DHCP 配的，
+        # build:debian 跑的當下 VM 根本還沒開機，不可能知道 IP；只有在
+        # VM 已經建好、Register、Power On、你自己查到它的 IP 之後，才有
+        # 辦法回答這個問題，所以這裡現場問、現場把完整設定生出來並接通
+        # 隧道，不像之前那樣先寫一個殘缺的設定、要你事後自己編輯檔案。
+        vm_ip=$(gum input --placeholder "VM 的 IP（WireGuard Endpoint 要用，VM 要先開機、查到 IP 才填得出來）")
+        if [ -z "$vm_ip" ]; then
+          echo "錯誤：VM 的 IP 不能是空的" >&2
+          exit 1
+        fi
+
+        # 如果這是 WSL2（裝得到 cmd.exe、wslpath），順便查一下 Windows 原生那邊的
+        # 使用者家目錄在哪裡——WSL 的使用者名稱不等於 Windows 的使用者名稱，沒辦法
+        # 用猜的，直接問 Windows 本人（cmd.exe /c echo %USERPROFILE%）最準。查不到
+        # 就留空，playbook 那邊看到空的會直接跳過複製到 Windows 這段，不會失敗。
+        windows_home_path=""
+        if command -v cmd.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
+          windows_profile=$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d '\r')
+          if [ -n "$windows_profile" ]; then
+            windows_home_path=$(wslpath -u "$windows_profile" 2>/dev/null || true)
+          fi
+        fi
+
+        ansible-playbook playbook/wsl/add-peer.yml --extra-vars "vm_endpoint_ip=${vm_ip} windows_home_path=${windows_home_path}"

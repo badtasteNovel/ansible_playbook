@@ -69,6 +69,12 @@ d-i finish-install/reboot_in_progress note
 ### 連進來的連線才能用來登入，而且不能拿去做連線轉發／X11／agent forwarding。
 ### 用整個子網段而不是單一 peer 的 IP，是因為這把金鑰是共用的一把，不是每個
 ### peer 各自一把——鎖死某一個 peer 的 IP，其他後來加入的 peer 反而會被擋掉。
+###
+### 最後面那幾行處理第二顆磁碟（.vmx 的 scsi0:1，資料碟）——partman-auto 只
+### 設定去動 /dev/sda（系統碟），完全不碰第二顆，所以第二顆在這裡用一般的
+### parted/mkfs 手動切一個分割區、格式化成 ext4、寫進 /etc/fstab（用 UUID
+### 不用裝置名稱，比較不會因為裝置列舉順序變動而掛錯）。開機後掛在
+### vm_data_mount_path。
 d-i preseed/late_command string \
   mkdir -p /target/home/{{ vm_user }}/.ssh; \
   echo 'from="{{ wireguard_peer_subnet }}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding {{ ssh_public_key }}' > /target/home/{{ vm_user }}/.ssh/authorized_keys; \
@@ -96,4 +102,8 @@ d-i preseed/late_command string \
   echo '[Unit]' > /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
   echo 'After=wg-quick@wg0.service' >> /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
   echo 'Requires=wg-quick@wg0.service' >> /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
+  parted -s /dev/sdb mklabel gpt mkpart primary ext4 0% 100%; \
+  mkfs.ext4 -F /dev/sdb1; \
+  mkdir -p /target{{ vm_data_mount_path }}; \
+  echo "UUID=$(blkid -s UUID -o value /dev/sdb1) {{ vm_data_mount_path }} ext4 defaults 0 2" >> /target/etc/fstab; \
   true

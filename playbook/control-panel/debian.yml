@@ -13,7 +13,8 @@
 #      自己的公鑰/PresharedKey/IP，動態組出 wg0.conf 的 [Peer] 區塊
 #   3. 渲染 preseed.cfg、重新封裝 ISO（跟之前一樣，remaster-iso.sh 完全沒變邏輯）
 #   4. 渲染 .vmx
-#   5. SSH 進 hypervisor：建資料夾、scp 傳 ISO、scp 傳 .vmx、用 vmkfstools 建虛擬磁碟
+#   5. SSH 進 hypervisor：建資料夾、scp 傳 ISO、scp 傳 .vmx、用 vmkfstools 建兩顆虛擬磁碟
+#      （系統碟 + 資料碟，資料碟 preseed 裝機時會自動格式化、掛載到 vm_data_mount_path）
 #
 # 到這裡自動化就結束——VM 的「註冊」（register）跟「開機」刻意留給人工在 Host Client
 # 網頁介面上做，自動化程式碼完全不碰 ESXi 的管理層（inventory）。
@@ -31,7 +32,9 @@
     vm_user: charlie
     vm_cpus: 2
     vm_memory_mb: 2048
-    vm_disk_gb: 20
+    vm_disk_system_gb: 30 # 系統碟：/、swap、/home 用 partman 的 home 配方切，不用動
+    vm_disk_data_gb: 10 # 第二顆資料碟：preseed 裝機時格式化成 ext4、掛載到 vm_data_mount_path，拿來存檔案/測試用
+    vm_data_mount_path: "/data"
     vm_ssh_port: 52222 # 不用預設 22，躲開公開掃描，也避開跟其他服務（例如之後可能裝的 Kubernetes/Cilium）的 port 衝突
 
     wireguard_vm_address: "10.105.0.1"
@@ -42,21 +45,25 @@
     keys_dir: "{{ playbook_dir }}/../../custom/generated/keys"
     wireguard_keys_base_dir: "{{ keys_dir }}/wireguard-keys" # custom/generated/keys/ 底下按用途分的子資料夾之一
     wireguard_peers_dir: "{{ wireguard_keys_base_dir }}/wireguard_peers" # 每個 peer 一個子目錄，見 roles/wireguard_keys/tasks/peer_key.yml
-    ssh_key_path: "{{ keys_dir }}/{{ vm_user }}_ed25519" # VM 上 charlie 登入用的 client 金鑰
-    ssh_host_key_path: "{{ keys_dir }}/{{ vm_name }}_host_ed25519" # VM 自己的 host key
-    hypervisor_known_hosts_path: "{{ keys_dir }}/hypervisor_known_hosts"
-    known_hosts_path: "{{ keys_dir }}/known_hosts" # 之後手動把 VM 的 IP 補進這個檔案
+    ssh_key_path: "{{ keys_dir }}/ssh/{{ vm_user }}_ed25519" # VM 上 charlie 登入用的 client 金鑰
+    ssh_host_key_path: "{{ keys_dir }}/known-hosts/{{ vm_name }}/ed_25519" # VM 自己的 host key——放在 known-hosts/ 底下，因為這把金鑰的用途就是 known_hosts 驗證
+    hypervisor_known_hosts_path: "{{ keys_dir }}/known-hosts/hypervisor_known_hosts"
+    # 沒有 known_hosts_path 這個變數——這支 playbook 只負責產生原始金鑰材料，
+    # 不組「可以直接拿來連線用」的 known_hosts 檔案，那是 SSH client 端的設定，
+    # 歸 playbook/wsl/add-peer.yml 管（見該檔案開頭說明）。
 
     generated_dir: "{{ playbook_dir }}/../../custom/generated"
     preseed_output_dir: "{{ generated_dir }}/preseed/{{ vm_name }}" # 存放要塞進 ISO 的所有檔案（preseed.cfg + host key）
     iso_output_dir: "{{ generated_dir }}/iso/{{ vm_name }}"
     preseed_output_iso: "{{ iso_output_dir }}/{{ vm_name }}-preseed.iso"
     vmx_output_path: "{{ iso_output_dir }}/{{ vm_name }}.vmx"
+    remaster_iso_script: "{{ playbook_dir }}/../../custom/scripts/remaster-iso/debian.sh" # 獨立宣告成變數，以後要換成別的腳本/工具比較方便改
 
     datastore_vm_dir: "/vmfs/volumes/{{ hypervisor_datastore }}/{{ vm_name }}"
     datastore_iso_path: "{{ datastore_vm_dir }}/{{ vm_name }}-preseed.iso"
     datastore_vmx_path: "{{ datastore_vm_dir }}/{{ vm_name }}.vmx"
-    datastore_vmdk_path: "{{ datastore_vm_dir }}/{{ vm_name }}.vmdk"
+    datastore_system_vmdk_path: "{{ datastore_vm_dir }}/{{ vm_name }}.vmdk"
+    datastore_data_vmdk_path: "{{ datastore_vm_dir }}/{{ vm_name }}-data.vmdk"
 
     hypervisor_hostname: "{{ lookup('env', 'HYPERVISOR_HOSTNAME') }}"
     hypervisor_username: "{{ lookup('env', 'HYPERVISOR_USERNAME') }}"
@@ -89,6 +96,8 @@
         mode: "0700"
       loop:
         - "{{ keys_dir }}"
+        - "{{ keys_dir }}/ssh" # ssh_key_path 的上層目錄
+        - "{{ keys_dir }}/known-hosts/{{ vm_name }}" # ssh_host_key_path 的上層目錄
         - "{{ preseed_output_dir }}"
         - "{{ iso_output_dir }}"
 
@@ -108,11 +117,6 @@
         path: "{{ ssh_host_key_path }}"
         type: ed25519
         comment: "{{ vm_name }}"
-
-    - name: 讀取 host key 公鑰內容（之後印出來給使用者填 known_hosts 用）
-      ansible.builtin.slurp:
-        src: "{{ ssh_host_key_path }}.pub"
-      register: ssh_host_public_key_raw
 
     - name: 把 host key 複製進 ISO 注入資料夾（用複製檔案，不把金鑰內容塞進 late_command 字串）
       ansible.builtin.copy:
@@ -187,7 +191,7 @@
     - name: 重新封裝 ISO，塞入 preseed.cfg、host key 並改開機參數
       ansible.builtin.command:
         cmd: >
-          {{ playbook_dir }}/../../custom/scripts/remaster-iso/debian.sh
+          {{ remaster_iso_script }}
           {{ iso_path }}
           {{ preseed_output_dir }}
           {{ preseed_output_iso }}
@@ -230,12 +234,22 @@
         SSHPASS: "{{ hypervisor_password }}"
       changed_when: true
 
-    - name: 用 vmkfstools 建立虛擬磁碟
+    - name: 用 vmkfstools 建立系統碟
       ansible.builtin.command:
         cmd: >
           sshpass -e ssh {{ ssh_opts }}
           {{ hypervisor_username }}@{{ hypervisor_hostname }}
-          vmkfstools -c {{ vm_disk_gb }}G -d thin {{ datastore_vmdk_path }}
+          vmkfstools -c {{ vm_disk_system_gb }}G -d thin {{ datastore_system_vmdk_path }}
+      environment:
+        SSHPASS: "{{ hypervisor_password }}"
+      changed_when: true
+
+    - name: 用 vmkfstools 建立資料碟
+      ansible.builtin.command:
+        cmd: >
+          sshpass -e ssh {{ ssh_opts }}
+          {{ hypervisor_username }}@{{ hypervisor_hostname }}
+          vmkfstools -c {{ vm_disk_data_gb }}G -d thin {{ datastore_data_vmdk_path }}
       environment:
         SSHPASS: "{{ hypervisor_password }}"
       changed_when: true
@@ -246,13 +260,6 @@
           - "VM 相關檔案都已經上傳完成，接下來要手動做（這幾步是 ESXi Host Client 專屬操作，換平台要重寫）："
           - "1. 登入 Host Client，瀏覽 datastore 到 {{ datastore_vmx_path }}，Register VM"
           - "2. 手動 Power On"
-          - "3. 開機、preseed 無人值守安裝跑完後，自己查一下 VM 的 IP"
-          - "4. SSH port 不是預設的 22，是 {{ vm_ssh_port }}。把下面這行的 [vm的ip] 換成實際 IP，整行貼到 {{ known_hosts_path }}（host key 是我們自己產生的，已知道內容，不用再掃描）："
-          - "[vm的ip]:{{ vm_ssh_port }} {{ (ssh_host_public_key_raw.content | b64decode).strip() }}"
-          - "使用者：{{ vm_user }}"
-          - "私鑰：{{ ssh_key_path }}"
-          - "連線範例：ssh -i {{ ssh_key_path }} -p {{ vm_ssh_port }} -o UserKnownHostsFile={{ known_hosts_path }} {{ vm_user }}@<VM的IP>"
-          - "⚠ 這台 VM 的 sshd 已經設定成只監聽 WireGuard 位址（{{ wireguard_vm_address }}），不是它的 LAN IP——"
-          - "上面第 4 步、連線範例裡的 <VM的IP>／[vm的ip]，都要填 {{ wireguard_vm_address }}，不是 VM 實際的 LAN IP。"
-          - "VM 的 LAN IP 還是要查出來，但只有一個用途：填進 playbook/wsl/add-peer.yml 產生的 /etc/wireguard/wg0.conf 的 Endpoint（照那支 playbook 執行完印出的提示做）。"
-          - "沒有先把 WireGuard 隧道接通（在加入 peer 的那台機器上 sudo wg-quick up wg0），上面的 SSH 連線範例不會動——這是設計上的取捨，不是 bug。"
+          - "3. 開機、preseed 無人值守安裝跑完後，自己查一下 VM 的 LAN IP（唯一用途：等一下 task add-peer 要用）"
+          - "4. 跑 task add-peer——把目前這台機器加進 WireGuard、接通隧道、順便把 known_hosts 跟 SSH 私鑰準備好（VM 的 LAN IP 就是這時候用）"
+          - "5. 接通之後，SSH 連線固定走 WireGuard 位址 {{ wireguard_vm_address }}，不是 VM 的 LAN IP——連線細節看 task add-peer 跑完印出的提示"

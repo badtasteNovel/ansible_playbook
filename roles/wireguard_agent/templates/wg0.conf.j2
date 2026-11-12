@@ -6,7 +6,8 @@ Address = {{ wireguard_agent_address }}/24
 PublicKey = {{ wireguard_peer_public_key }}
 PresharedKey = {{ wireguard_preshared_key }}
 AllowedIPs = {{ wireguard_vm_address }}/32
-# VM 現在還沒開機，不知道它 DHCP 會拿到哪個 IP，所以先不填 Endpoint。
-# VM 建好、查到 IP 之後，把下面這行的註解拿掉、換成實際 IP，再 `sudo wg-quick down wg0 && sudo wg-quick up wg0`。
-# Endpoint = <VM的IP>:{{ wireguard_listen_port }}
+# wireguard_endpoint_ip 是 playbook/wsl/add-peer.yml 執行當下，由 task add-peer
+# 用 gum input 問來的 VM 真實 IP——這個時間點 VM 已經開機、IP 已知，不是 build:debian
+# 當下那種還不知道的情況，所以這裡直接填完整值，不用再留空、事後手動編輯。
+Endpoint = {{ wireguard_endpoint_ip }}:{{ wireguard_listen_port }}
 PersistentKeepalive = 25

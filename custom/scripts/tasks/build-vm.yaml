@@ -38,27 +38,15 @@ tasks:
         vm_name="debian-vm"
         preseed_iso_path="$(pwd)/custom/generated/iso/${vm_name}/${vm_name}-preseed.iso"
 
-        # 這台 VM 一定會被設成 WireGuard server，這不是選用功能——這裡問兩件事：
-        # 1. 這次要新增幾個匿名的 peer 位置（金鑰先產生好，還沒被任何機器用）
-        # 2. 要不要讓「目前這台機器」認領其中一個，變成它的 WireGuard peer
-        # 認領（playbook/wsl/add-peer.yml）要排在 control-panel/debian.yml 之後，
-        # 因為 peer 位置是 control-panel 那邊批次產生的，這裡問完先記住答案，
-        # 實際執行順序在下面。
+        # 這台 VM 一定會被設成 WireGuard server，這不是選用功能——這裡只問
+        # 要新增幾個匿名的 peer 位置（金鑰先產生好，還沒被任何機器用）。
+        # 「把目前這台機器認領成 peer」刻意不在這裡問、也不在這裡做——認領
+        # 需要填 VM 的 Endpoint（真實 IP），但這個當下 VM 根本還沒開機，
+        # 不可能知道 IP。等 VM 建好、開機、查到 IP 之後，另外跑 task add-peer。
         peer_slot_count=$(gum input --placeholder "這次要新增幾個 WireGuard peer 位置？不需要就輸入 0" --value "0")
         if ! [[ "$peer_slot_count" =~ ^[0-9]+$ ]]; then
           echo "錯誤：peer 數量必須是非負整數" >&2
           exit 1
-        fi
-        add_self_as_peer=false
-        if gum confirm "要把目前這台機器加進這台新 VM 的 WireGuard 點對點網路，成為一個 peer 嗎？"; then
-          add_self_as_peer=true
-          # 要認領就至少要有一個位置可以認領——如果使用者剛剛打 0，這裡還是
-          # 強制生一個，不然等一下 add-peer.yml 會直接找不到可認領的位置失敗。
-          # 如果本來就有之前 build 留下的、還沒被認領的位置，多生一個也無妨，
-          # 只是多一個備用名額。
-          if [ "$peer_slot_count" -lt 1 ]; then
-            peer_slot_count=1
-          fi
         fi
 
         # ISO 重新封裝（含修改開機參數）要花時間，而且 playbook/control-panel/debian.yml
@@ -77,12 +65,12 @@ tasks:
         # 純檔案系統層級的 SSH 檢查（test -d），刻意不呼叫 vim-cmd 查電源
         # 狀態——那會碰到 ESXi 的 inventory 層，不符合這個專案「完全不碰
         # ESXi 管理層 API」的設計，所以請使用者自己確認 VM 沒有在跑。
-        mkdir -p custom/generated/keys
+        mkdir -p custom/generated/keys/known-hosts
         export SSHPASS="$HYPERVISOR_PASSWORD"
         datastore_vm_dir="/vmfs/volumes/${HYPERVISOR_DATASTORE}/${vm_name}"
         remote_check=$(sshpass -e ssh \
           -o StrictHostKeyChecking=accept-new \
-          -o UserKnownHostsFile=custom/generated/keys/hypervisor_known_hosts \
+          -o UserKnownHostsFile=custom/generated/keys/known-hosts/hypervisor_known_hosts \
           "${HYPERVISOR_USERNAME}@${HYPERVISOR_HOSTNAME}" \
           "[ -d '${datastore_vm_dir}' ] && echo EXISTS || echo MISSING")
         if [ "$remote_check" = "EXISTS" ]; then
@@ -94,8 +82,5 @@ tasks:
 
         ansible-playbook "$build_path" --extra-vars "iso_path=${iso_path} peer_slot_count=${peer_slot_count}"
 
-        # 一定要排在上面那行之後：peer 位置是 control-panel 剛剛才批次產生的，
-        # 這裡認領（用 glob 找一個還沒被用過的）才會找得到東西可以認領。
-        if [ "$add_self_as_peer" = true ]; then
-          ansible-playbook playbook/wsl/add-peer.yml
-        fi
+        echo "" >&2
+        echo "要把這台機器加進 WireGuard、成為 peer，VM 開機、查到 IP 之後，請跑：task add-peer" >&2

@@ -1,7 +1,11 @@
 ---
-# 把目前這台機器（WSL2 控制節點）加進 debian-vm 的 WireGuard 點對點網路，成為一個 peer。
+# 把目前這台機器（WSL2 控制節點）加進 debian-vm 的 WireGuard 點對點網路，成為一個 peer，
+# 並且直接把隧道接通。需要用 --extra-vars "vm_endpoint_ip=<VM的IP>" 指定 VM 的真實 IP
+# （Endpoint 要用）——這支 playbook 刻意獨立於 build:debian 之外（見 task add-peer），
+# 因為 Endpoint 需要 VM 已經建好、開機、你自己查到它的 IP 之後才填得出來，build:debian
+# 跑的當下 VM 根本還沒開機，不可能知道這個值。
 #
-# 不需要指定名字——用 glob 在 custom/generated/keys/wireguard-keys/wireguard_peers/
+# 不需要指定 peer 名字——用 glob 在 custom/generated/keys/wireguard-keys/wireguard_peers/
 # 底下找一個「還沒被任何機器認領」的 peer 位置來用（見 roles/wireguard_keys/tasks/
 # claim_peer.yml），認領到之後寫一個 claimed 標記，避免兩台機器搶到同一組金鑰。
 # peer 位置本身是 control-panel/debian.yml 用 peer_slot_count 批次產生的——如果
@@ -12,32 +16,44 @@
 # 不代表它會變成某個 cluster（例如 k3s）裡聽 VM 指揮的 agent 節點——目前這個專案
 # 根本還沒佈署任何 cluster，純粹是 WireGuard 的用詞選擇問題。
 #
-# VM 自己的 WireGuard 身分只歸 playbook/control-panel/debian.yml 管——這支
-# playbook 只負責「把某台機器加入成為 peer」，不跨界幫忙產生 VM 的金鑰。如果
-# VM 的金鑰還不存在（代表 control-panel 從來沒跑過），這裡會直接報錯，請先跑
+# VM 自己的身分（WireGuard 金鑰、SSH host key）只歸 playbook/control-panel/debian.yml
+# 管——那支 playbook 只負責產生原始金鑰材料，存進 custom/generated/keys/，不組任何
+# 「可以直接拿來連線用」的設定檔。SSH client 端的設定（known_hosts、要不要複製一份
+# 給 Windows 原生環境用）才是這支 playbook 的事，不管 WSL 自己還是 Windows 都一樣。
+# 如果 VM 的金鑰還不存在（代表 control-panel 從來沒跑過），這裡會直接報錯，請先跑
 # 一次 task build:debian，而不是在這裡偷偷補一個出來。
 #
 # 這是目前整個專案裡唯一一支會動到「執行 Ansible 這台機器自己」系統設定的 playbook
-# （寫 /etc/wireguard/wg0.conf），所以需要 sudo；其他地方都只動 custom/ 底下的本地
-# 檔案，或是透過 SSH 動遠端的 ESXi/VM。wireguard-tools 本身不在這裡裝，是
+# （寫 /etc/wireguard/wg0.conf、wg-quick up），所以需要 sudo；其他地方都只動 custom/
+# 底下的本地檔案，或是透過 SSH 動遠端的 ESXi/VM。wireguard-tools 本身不在這裡裝，是
 # task install（install:wireguard-tools）先裝好的，這裡假設它已經存在。
-#
-# wg0.conf 裡的 [Peer] Endpoint 刻意留空（用註解佔位）——VM 現在還沒開機，不知道它
-# DHCP 會拿到哪個 IP。VM 建好、查到 IP 之後，照這支 playbook 最後印出的提示手動補上。
 
-- name: 把這台機器加進 debian-vm 的 WireGuard 點對點網路
+- name: 把這台機器加進 debian-vm 的 WireGuard 點對點網路，並接通隧道
   hosts: localhost
   connection: local
   gather_facts: false
 
   vars:
+    vm_name: debian-vm
+    vm_user: charlie
+    vm_ssh_port: 52222
     keys_dir: "{{ playbook_dir }}/../../custom/generated/keys"
     wireguard_keys_base_dir: "{{ keys_dir }}/wireguard-keys" # custom/generated/keys/ 底下按用途分的子資料夾之一
     wireguard_peers_dir: "{{ wireguard_keys_base_dir }}/wireguard_peers"
     wireguard_vm_address: "10.105.0.1"
     wireguard_listen_port: 51820
+    ssh_host_key_path: "{{ keys_dir }}/known-hosts/{{ vm_name }}/ed_25519" # control-panel/debian.yml 產生的 VM host key，路徑要跟那邊一致
+    known_hosts_path: "{{ keys_dir }}/known-hosts/known_hosts" # 這支 playbook 自己組、自己寫——SSH client 端的設定歸這裡管，不歸 control-panel 管
+    windows_home_path: "" # task add-peer 偵測到 WSL2 的話會帶進來；偵測不到就是空字串，底下那段會整個跳過
 
   tasks:
+    - name: 確認有指定 vm_endpoint_ip
+      ansible.builtin.assert:
+        that:
+          - vm_endpoint_ip is defined
+          - vm_endpoint_ip | length > 0
+        fail_msg: "請用 --extra-vars 'vm_endpoint_ip=<VM的IP>' 指定 VM 的真實 IP（VM 要先建好、開機、查到 IP 才填得出來），或直接跑 task add-peer 讓它用 gum input 問你"
+
     - name: 確認 VM 自己的 WireGuard 金鑰已經存在（VM 的身分只歸 control-panel/debian.yml 管，這裡不幫忙產生）
       ansible.builtin.stat:
         path: "{{ wireguard_keys_base_dir }}/debian-vm_wireguard.pub"
@@ -79,7 +95,7 @@
         state: directory
         mode: "0700"
 
-    - name: 渲染這台機器的 wg0.conf
+    - name: 渲染這台機器的 wg0.conf（Endpoint 直接填實際 IP，不再留空）
       become: true
       ansible.builtin.template:
         src: "{{ playbook_dir }}/../../roles/wireguard_agent/templates/wg0.conf.j2"
@@ -90,13 +106,80 @@
         wireguard_agent_address: "{{ (wireguard_peer_address_raw.content | b64decode).strip() }}"
         wireguard_peer_public_key: "{{ (wireguard_vm_public_key_raw.content | b64decode).strip() }}"
         wireguard_preshared_key: "{{ (wireguard_peer_psk_raw.content | b64decode).strip() }}"
+        wireguard_endpoint_ip: "{{ vm_endpoint_ip }}"
 
-    - name: 印出後續手動步驟
+    - name: 如果隧道之前已經是 up 的狀態，先關掉，等一下用新設定重新接通（第一次執行時這步本來就會失敗，忽略即可）
+      become: true
+      ansible.builtin.command: wg-quick down wg0
+      changed_when: true
+      failed_when: false
+
+    - name: 接通 WireGuard 隧道（wg-quick up wg0）
+      become: true
+      ansible.builtin.command: wg-quick up wg0
+      changed_when: true
+
+    - name: 確認 VM 的 SSH host key 已經存在（control-panel/debian.yml 產生的，這裡只是要讀，不會幫忙產生）
+      ansible.builtin.stat:
+        path: "{{ ssh_host_key_path }}.pub"
+      register: vm_ssh_host_pubkey_stat
+
+    - name: 擋下「VM host key 還不存在」的情況
+      ansible.builtin.assert:
+        that: vm_ssh_host_pubkey_stat.stat.exists
+        fail_msg: "找不到 {{ ssh_host_key_path }}.pub，請先跑過一次 task build:debian"
+
+    - name: 讀取 VM 的 SSH host 公鑰
+      ansible.builtin.slurp:
+        src: "{{ ssh_host_key_path }}.pub"
+      register: vm_ssh_host_pubkey_raw
+
+    - name: 組出 known_hosts（連線位址固定是 WireGuard 的 {{ wireguard_vm_address }}，不是 DHCP 配的 LAN IP，所以這裡就能直接寫好）
+      ansible.builtin.copy:
+        content: "[{{ wireguard_vm_address }}]:{{ vm_ssh_port }} {{ (vm_ssh_host_pubkey_raw.content | b64decode).strip() }}\n"
+        dest: "{{ known_hosts_path }}"
+        mode: "0600"
+
+    - name: 複製連線用的金鑰跟 known_hosts 給 Windows 原生環境用（偵測不到 Windows 家目錄就整段跳過）
+      when: windows_home_path | length > 0
+      block:
+        - name: 確保 Windows 那邊的 .ssh/ 存在
+          ansible.builtin.file:
+            path: "{{ windows_home_path }}/.ssh"
+            state: directory
+            mode: "0700"
+
+        - name: 複製 charlie 的 client 私鑰
+          ansible.builtin.copy:
+            src: "{{ keys_dir }}/ssh/{{ vm_user }}_ed25519"
+            dest: "{{ windows_home_path }}/.ssh/{{ vm_name }}_{{ vm_user }}_ed25519"
+            mode: "0600"
+            remote_src: true
+
+        - name: 複製 charlie 的 client 公鑰
+          ansible.builtin.copy:
+            src: "{{ keys_dir }}/ssh/{{ vm_user }}_ed25519.pub"
+            dest: "{{ windows_home_path }}/.ssh/{{ vm_name }}_{{ vm_user }}_ed25519.pub"
+            mode: "0644"
+            remote_src: true
+
+        - name: 複製 known_hosts（上面這支 playbook 自己剛寫好的那份）
+          ansible.builtin.copy:
+            src: "{{ keys_dir }}/known-hosts/known_hosts"
+            dest: "{{ windows_home_path }}/.ssh/{{ vm_name }}_known_hosts"
+            mode: "0600"
+            remote_src: true
+
+        - name: 印出複製到 Windows 的檔案路徑
+          ansible.builtin.debug:
+            msg:
+              - "已經把連線需要的檔案複製到 Windows 原生環境的 .ssh/ 底下（檔名刻意跟常見的 id_ed25519／known_hosts 不同，不會蓋掉你原本就有的東西）："
+              - "私鑰：{{ windows_home_path }}/.ssh/{{ vm_name }}_{{ vm_user }}_ed25519"
+              - "known_hosts：{{ windows_home_path }}/.ssh/{{ vm_name }}_known_hosts"
+              - "這兩個檔案現在能不能真的連得上，取決於你有沒有另外在原生 Windows 上手動把 WireGuard for Windows 設好——這部分前面討論過，目前沒有自動化。"
+
+    - name: 印出結果
       ansible.builtin.debug:
         msg:
-          - "這台機器認領到的 peer 是 {{ claimed_peer_name }}，WireGuard 設定已經寫到 /etc/wireguard/wg0.conf，但還沒啟用。"
-          - "因為 VM 現在還沒開機，不知道它的 Endpoint（IP），所以 [Peer] 區塊裡的 Endpoint 先用註解佔位。"
-          - "等 VM 建好、開機、查到 IP 之後："
-          - "1. 編輯 /etc/wireguard/wg0.conf，把 '# Endpoint = <VM的IP>:{{ wireguard_listen_port }}' 這行的註解拿掉，<VM的IP> 換成實際 IP"
-          - "2. sudo wg-quick up wg0（如果之前已經 up 過，先 sudo wg-quick down wg0 再 up 一次讓設定生效）"
-          - "3. 之後 SSH 到 VM 要改連 {{ wireguard_vm_address }}，不是它的 LAN IP——VM 的 sshd 已經只監聽 WireGuard 這個位址"
+          - "這台機器認領到的 peer 是 {{ claimed_peer_name }}，WireGuard 隧道已經接通。"
+          - "之後 SSH 到 VM 要改連 {{ wireguard_vm_address }}，不是它的 LAN IP——VM 的 sshd 已經只監聽 WireGuard 這個位址。"
