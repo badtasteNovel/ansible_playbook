@@ -28,7 +28,15 @@
   gather_facts: false
 
   vars:
-    vm_name: debian-vm
+    # 沒有 vm_name 的預設值——這是「這次要建的 VM 叫什麼」這種每次 build 的
+    # 輸入參數，不是 ISO/OS 等級的靜態設定，所以不放在 manifest.json 裡，
+    # 也不在這裡寫死。custom/scripts/tasks/build-vm.yaml 用
+    # custom/scripts/vm-form.sh（搭配 custom/scripts/vm-form/debian.json
+    # 的欄位定義）現場問使用者，再用 --extra-vars 傳進來。刻意不放預設值：
+    # 之前到處各自寫死 "debian-vm" 字串（這裡、Taskfile、
+    # playbook/wsl/add-peer.yml、roles/wireguard_keys/tasks/vm_key.yml……），
+    # 哪天要加第二台 VM、只改掉其中幾個地方，就會悄悄兜不起來——還真的抓到
+    # 好幾處漏改的。
     vm_user: charlie
     vm_cpus: 2
     vm_memory_mb: 2048
@@ -44,7 +52,7 @@
 
     keys_dir: "{{ playbook_dir }}/../../custom/generated/keys"
     wireguard_keys_base_dir: "{{ keys_dir }}/wireguard-keys" # custom/generated/keys/ 底下按用途分的子資料夾之一
-    wireguard_peers_dir: "{{ wireguard_keys_base_dir }}/wireguard_peers" # 每個 peer 一個子目錄，見 roles/wireguard_keys/tasks/peer_key.yml
+    wireguard_peers_dir: "{{ wireguard_keys_base_dir }}/wireguard_peers" # 每個 peer 一個子目錄，見 roles/wireguard_keys/tasks/generate_one_peer_slot.yml、claim_peer.yml
     ssh_key_path: "{{ keys_dir }}/ssh/{{ vm_user }}_ed25519" # VM 上 charlie 登入用的 client 金鑰
     ssh_host_key_path: "{{ keys_dir }}/known-hosts/{{ vm_name }}/ed_25519" # VM 自己的 host key——放在 known-hosts/ 底下，因為這把金鑰的用途就是 known_hosts 驗證
     hypervisor_known_hosts_path: "{{ keys_dir }}/known-hosts/hypervisor_known_hosts"
@@ -79,6 +87,8 @@
     - name: 確認必要變數都有值
       ansible.builtin.assert:
         that:
+          - vm_name is defined
+          - vm_name | length > 0
           - iso_path is defined
           - hypervisor_hostname | length > 0
           - hypervisor_username | length > 0
@@ -87,7 +97,9 @@
           - hypervisor_network | length > 0
         fail_msg: >-
           請確認 custom/.env 已填好必要連線資訊，且透過 --extra-vars 傳入
-          iso_path（task select-iso 的輸出路徑）
+          vm_name（custom/scripts/vm-form.sh 問出來的值）跟 iso_path（task
+          select-iso 的輸出路徑）——正常透過 task build:debian 跑就不用自己
+          管這兩個，Taskfile 會自動帶
 
     - name: 確保 custom/generated/keys/、custom/generated/preseed/、custom/generated/iso/ 目錄存在
       ansible.builtin.file:
@@ -144,7 +156,7 @@
 
     - name: 讀取 VM 自己的 WireGuard 私鑰
       ansible.builtin.slurp:
-        src: "{{ wireguard_keys_base_dir }}/debian-vm_wireguard"
+        src: "{{ wireguard_keys_base_dir }}/{{ vm_name }}_wireguard"
       register: wireguard_vm_private_key_raw
 
     - name: 列出目前已經存在的 WireGuard peer 目錄（數量不固定，可能是 0 個）

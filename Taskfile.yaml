@@ -33,7 +33,7 @@ tasks:
         fi
 
   add-peer:
-    desc: "把目前這台機器加進 debian-vm 的 WireGuard 點對點網路（VM 要先建好、開機、知道它的 IP 才能跑這個）"
+    desc: "把目前這台機器加進某台 VM 的 WireGuard 點對點網路（VM 要先建好、開機、知道它的 IP 才能跑這個）"
     silent: true
     cmds:
       - |
@@ -43,7 +43,7 @@ tasks:
         # VM 已經建好、Register、Power On、你自己查到它的 IP 之後，才有
         # 辦法回答這個問題，所以這裡現場問、現場把完整設定生出來並接通
         # 隧道，不像之前那樣先寫一個殘缺的設定、要你事後自己編輯檔案。
-        vm_ip=$(gum input --placeholder "VM 的 IP（WireGuard Endpoint 要用，VM 要先開機、查到 IP 才填得出來）")
+        vm_ip=$(gum input --header '請輸入virtual machine ip')
         if [ -z "$vm_ip" ]; then
           echo "錯誤：VM 的 IP 不能是空的" >&2
           exit 1
@@ -52,7 +52,7 @@ tasks:
         # 如果這是 WSL2（裝得到 cmd.exe、wslpath），順便查一下 Windows 原生那邊的
         # 使用者家目錄在哪裡——WSL 的使用者名稱不等於 Windows 的使用者名稱，沒辦法
         # 用猜的，直接問 Windows 本人（cmd.exe /c echo %USERPROFILE%）最準。查不到
-        # 就留空，playbook 那邊看到空的會直接跳過複製到 Windows 這段，不會失敗。
+        # 就留空，playbook 那邊看到空的會直接跳過 Windows 這整段，不會失敗。
         windows_home_path=""
         if command -v cmd.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
           windows_profile=$(cmd.exe /c "echo %USERPROFILE%" 2>/dev/null | tr -d '\r')
@@ -61,4 +61,35 @@ tasks:
           fi
         fi
 
-        ansible-playbook playbook/wsl/add-peer.yml --extra-vars "vm_endpoint_ip=${vm_ip} windows_home_path=${windows_home_path}"
+        # vm_name 不是存在哪個設定檔裡的靜態值（build:debian 是用表單現場
+        # 問的，不會留下來），這裡改成掃 custom/generated/iso/ 底下有哪些
+        # 已經 build 過的 VM（每個 VM 一個同名子資料夾），讓使用者自己選要
+        # 幫哪一台加 peer——VM 可能不只一台，不能用猜的或寫死。
+        vm_names=$(find custom/generated/iso -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null || true)
+        if [ -z "$vm_names" ]; then
+          echo "錯誤：custom/generated/iso/ 底下沒有任何已經 build 過的 VM，請先跑 task build:debian" >&2
+          exit 1
+        fi
+        vm_name=$(echo "$vm_names" | gum choose --header "要幫哪一台 VM 加 peer？")
+        if [ -z "$vm_name" ]; then
+          echo "錯誤：沒有選擇 VM" >&2
+          exit 1
+        fi
+        windows_conf_path=""
+        if [ -n "$windows_home_path" ]; then
+          windows_conf_path="${windows_home_path}/.wireguard/${vm_name}.conf"
+          if [ -f "$windows_conf_path" ]; then
+            if ! gum confirm "$windows_conf_path 已經存在，要覆蓋嗎？"; then
+              windows_conf_path="" # 選不要就整段跳過，不影響 WSL2 自己那邊照常接通
+            fi
+          fi
+        fi
+
+        # 分開傳好幾個 --extra-vars，不要塞進同一個用空白分隔的字串——Windows
+        # 使用者名稱可能帶空白（例如 "John Doe"），空白分隔的 key=value 寫法
+        # 在這種情況下會直接解析錯誤，每個各自用自己的引號包起來就沒事。
+        ansible-playbook playbook/wsl/add-peer.yml \
+          --extra-vars "vm_endpoint_ip=${vm_ip}" \
+          --extra-vars "windows_home_path=${windows_home_path}" \
+          --extra-vars "windows_conf_path=${windows_conf_path}" \
+          --extra-vars "vm_name=${vm_name}"

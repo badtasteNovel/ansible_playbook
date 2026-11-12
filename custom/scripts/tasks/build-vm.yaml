@@ -32,10 +32,19 @@ tasks:
           exit 1
         fi
 
-        # vm_name 要跟 playbook/control-panel/debian.yml 裡的 vm_name 保持一致——目前全專案
-        # 只有這一台 VM，先硬寫；之後要支援多台 VM 的話，這個值要想辦法變成
-        # 兩邊共用的單一來源，而不是分別寫死兩份。
-        vm_name="debian-vm"
+        # vm_name 不是 ISO/OS 等級的靜態設定（manifest.json 管的是那種東西），
+        # 是「這次要建的 VM 叫什麼」這種每次 build 的輸入參數，所以用表單
+        # 現場問，不是寫死、也不是塞進 manifest.json。欄位直接寫在
+        # custom/scripts/vm-form/debian/main.go 裡（用 huh 寫的），之後要加
+        # 更多欄位（CPU、記憶體、磁碟大小……）改那個檔案就好。原始碼就在
+        # 專案裡，直接 go run 現場跑，不用多一道事先編譯二進位檔的手續
+        # （go 自己有 build cache，重複跑不會每次都重新編譯整個依賴）。
+        vm_form_result=$(go run -C custom/scripts/vm-form ./debian)
+        vm_name=$(jq -r '.vm_name' <<<"$vm_form_result")
+        if [ -z "$vm_name" ] || [ "$vm_name" = "null" ]; then
+          echo "錯誤：VM 名稱不能是空的" >&2
+          exit 1
+        fi
         preseed_iso_path="$(pwd)/custom/generated/iso/${vm_name}/${vm_name}-preseed.iso"
 
         # 這台 VM 一定會被設成 WireGuard server，這不是選用功能——這裡只問
@@ -43,7 +52,7 @@ tasks:
         # 「把目前這台機器認領成 peer」刻意不在這裡問、也不在這裡做——認領
         # 需要填 VM 的 Endpoint（真實 IP），但這個當下 VM 根本還沒開機，
         # 不可能知道 IP。等 VM 建好、開機、查到 IP 之後，另外跑 task add-peer。
-        peer_slot_count=$(gum input --placeholder "這次要新增幾個 WireGuard peer 位置？不需要就留空")
+        peer_slot_count=$(gum input --header '請輸入有幾個wireguard peer 位置')
         if [ -z "$peer_slot_count" ]; then
           peer_slot_count=0
         fi
@@ -83,7 +92,10 @@ tasks:
           fi
         fi
 
-        ansible-playbook "$build_path" --extra-vars "iso_path=${iso_path} peer_slot_count=${peer_slot_count}"
+        ansible-playbook "$build_path" \
+          --extra-vars "iso_path=${iso_path}" \
+          --extra-vars "peer_slot_count=${peer_slot_count}" \
+          --extra-vars "vm_name=${vm_name}"
 
         echo "" >&2
         echo "要把這台機器加進 WireGuard、成為 peer，VM 開機、查到 IP 之後，請跑：task add-peer" >&2

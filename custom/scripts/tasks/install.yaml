@@ -48,6 +48,17 @@ tasks:
       - sudo apt-get update
       - sudo apt-get install -y wireguard-tools
 
+  go:
+    desc: "安裝 Go 工具鏈（custom/scripts/vm-form/ 底下每個 OS 自己的互動表單用 go run 現場跑，不用事先編譯）"
+    silent: true
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y golang-go
+      - |
+        set -euo pipefail
+        cd custom/scripts/vm-form
+        go mod download
+
   default:
     desc: "安裝開發這個專案所需的所有工具"
     cmds:
@@ -57,3 +68,4 @@ tasks:
       - task: jq
       - task: sshpass
       - task: wireguard-tools
+      - task: go
