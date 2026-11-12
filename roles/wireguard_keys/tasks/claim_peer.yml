@@ -1,7 +1,13 @@
 ---
-# 從 wireguard_peers_dir 底下用 glob 找一個「還沒被任何機器認領」的 peer 位置來
-# 認領：找到之後在該 peer 目錄裡寫一個 claimed 檔案做標記（內容是認領者的
-# hostname + 時間），避免兩台機器（或同一台機器重跑兩次）搶到同一組金鑰。
+# 從 wireguard_peers_dir 底下用 glob 找一個「還沒被任何機器認領」的 peer 位置，
+# 只是「挑出來」，不在這裡寫 claimed 標記——標記動作被刻意拆到另一個檔案
+# mark_peer_claimed.yml，由呼叫端自己決定什麼時候呼叫。原因：如果在這裡挑到
+# 就馬上寫標記，呼叫端後面接著做的事（讀金鑰、渲染 wg0.conf、wg-quick up……）
+# 中途一旦失敗，這個 peer 已經被標記成「用掉了」，但其實什麼都沒真的設定
+# 成功——等於永久浪費一個位置，也讓 claimed 的意義變得不可信（claimed 應該
+# 代表「這個 peer 真的在使用中」，不是「曾經被挑過一次」）。正確時機是呼叫端
+# 確定自己這邊真的成功之後，才呼叫 mark_peer_claimed.yml。
+#
 # 認領到的 peer 名稱存進 claimed_peer_name 這個 fact，呼叫端用這個去讀
 # {{ wireguard_peers_dir }}/{{ claimed_peer_name }}/ 底下的金鑰內容。
 #
@@ -32,12 +38,6 @@
       {{ wireguard_peers_dir }} 底下找不到任何還沒被認領的 peer（可能是數量用完了，
       或是還沒產生過）——請先用 control-panel 的流程多產生幾個 peer 位置。
 
-- name: 挑第一個還沒被認領的 peer
+- name: 挑第一個還沒被認領的 peer（只是挑出來，還沒寫標記——見本檔開頭說明）
   ansible.builtin.set_fact:
     claimed_peer_name: "{{ (peer_claimed_stats.results | rejectattr('stat.exists') | map(attribute='item') | first).path | basename }}"
-
-- name: 寫入認領標記
-  ansible.builtin.copy:
-    content: "claimed by {{ lookup('pipe', 'hostname') }} at {{ lookup('pipe', 'date -Iseconds') }}\n"
-    dest: "{{ wireguard_peers_dir }}/{{ claimed_peer_name }}/claimed"
-    mode: "0600"

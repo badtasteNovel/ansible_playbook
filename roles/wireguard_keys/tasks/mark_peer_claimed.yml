@@ -1,0 +1,16 @@
+---
+# 把一個 peer 正式標記成「已認領」——跟 claim_peer.yml（只負責挑一個還沒被
+# 認領的 peer）刻意分開，見 claim_peer.yml 開頭的說明。呼叫端要在自己那邊
+# 的設定真的成功之後才呼叫這個檔案（例如 WireGuard 隧道已經 wg-quick up
+# 成功、或 Windows 的 .conf 已經成功寫出），不要在挑到 peer 的當下就標記，
+# 否則中途失敗會永久浪費一個 peer 位置，claimed 也會變得不可信。
+#
+# 呼叫前要先 set 好 wireguard_peers_dir、peer_to_claim（要標記的 peer 名稱，
+# 通常就是 claim_peer.yml 回傳的 claimed_peer_name，呼叫端自己存成一個不會
+# 被第二次呼叫蓋掉的獨立變數再傳進來）。
+
+- name: 標記 {{ peer_to_claim }} 為已認領
+  ansible.builtin.copy:
+    content: "claimed by {{ lookup('pipe', 'hostname') }} at {{ lookup('pipe', 'date -Iseconds') }}\n"
+    dest: "{{ wireguard_peers_dir }}/{{ peer_to_claim }}/claimed"
+    mode: "0600"

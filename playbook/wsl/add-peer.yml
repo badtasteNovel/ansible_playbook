@@ -22,11 +22,14 @@
 #
 # 不需要指定 peer 名字——用 glob 在 custom/generated/keys/wireguard-keys/wireguard_peers/
 # 底下找一個「還沒被任何機器認領」的 peer 位置來用（見 roles/wireguard_keys/tasks/
-# claim_peer.yml），認領到之後寫一個 claimed 標記，避免兩邊搶到同一組金鑰——這也是
-# 為什麼 WSL2 跟 Windows 兩邊各自認領一次，而不是共用同一次認領的結果。peer 位置
-# 本身是 control-panel/debian.yml 用 peer_slot_count 批次產生的——如果這裡找不到
-# 任何還沒被認領的位置，代表要嘛數量用完了、要嘛根本還沒產生過，必須先重新 build
-# 一次、要幾個新的位置（WSL2 + Windows 兩個都要算，記得至少留 2 個名額）。
+# claim_peer.yml），避免兩邊搶到同一組金鑰——這也是為什麼 WSL2 跟 Windows 兩邊各自
+# 認領一次，而不是共用同一次認領的結果。claimed 標記是等這邊的設定真的成功之後
+# 才寫上去的（見 roles/wireguard_keys/tasks/mark_peer_claimed.yml），不是挑到就
+# 馬上寫——挑跟標記刻意分開兩步，避免 wg-quick up 之類的步驟中途失敗，卻已經把
+# 這個 peer 永久標記成用掉了。peer 位置本身是 control-panel/debian.yml 用
+# peer_slot_count 批次產生的——如果這裡找不到任何還沒被認領的位置，代表要嘛數量
+# 用完了、要嘛根本還沒產生過，必須先重新 build 一次、要幾個新的位置（WSL2 +
+# Windows 兩個都要算，記得至少留 2 個名額）。
 #
 # 叫做 add-peer 而不是 agent，是刻意的：這台機器只是被加進 WireGuard 的點對點網路，
 # 不代表它會變成某個 cluster（例如 k3s）裡聽 VM 指揮的 agent 節點——目前這個專案
@@ -147,6 +150,12 @@
       ansible.builtin.command: wg-quick up wg0
       changed_when: true
 
+    - name: 隧道確定接通成功，才正式把 {{ wsl_peer_name }} 標記成已認領（見 claim_peer.yml 開頭說明：挑到跟標記分開兩步，避免中途失敗卻已經把這個 peer 用掉）
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/mark_peer_claimed.yml"
+      vars:
+        peer_to_claim: "{{ wsl_peer_name }}"
+
     - name: 確認 VM 的 SSH host key 已經存在（control-panel/debian.yml 產生的，這裡只是要讀，不會幫忙產生）
       ansible.builtin.stat:
         path: "{{ ssh_host_key_path }}.pub"
@@ -207,12 +216,19 @@
             src: "{{ playbook_dir }}/../../roles/wireguard_agent/templates/wg0.conf.j2"
             dest: "{{ windows_conf_path }}"
             mode: "0600"
+            unsafe_writes: true # windows_conf_path 在 WSL2 掛載的 /mnt/c/...（DrvFS）底下，不支援 atomic_move 靠的 POSIX 原子替換語義，要跳過它直接寫
           vars:
             wireguard_private_key: "{{ (windows_peer_private_key_raw.content | b64decode).strip() }}"
             wireguard_agent_address: "{{ (windows_peer_address_raw.content | b64decode).strip() }}"
             wireguard_peer_public_key: "{{ (wireguard_vm_public_key_raw.content | b64decode).strip() }}"
             wireguard_preshared_key: "{{ (windows_peer_psk_raw.content | b64decode).strip() }}"
             wireguard_endpoint_ip: "{{ vm_endpoint_ip }}"
+
+        - name: .conf 確定寫出成功，才正式把 {{ windows_peer_name }} 標記成已認領（見 claim_peer.yml 開頭說明：挑到跟標記分開兩步，避免中途失敗卻已經把這個 peer 用掉）
+          ansible.builtin.include_tasks:
+            file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/mark_peer_claimed.yml"
+          vars:
+            peer_to_claim: "{{ windows_peer_name }}"
 
         - name: 確保 Windows 那邊的 .ssh/ 存在
           ansible.builtin.file:
@@ -226,6 +242,7 @@
             dest: "{{ windows_home_path }}/.ssh/{{ vm_name }}_{{ vm_user }}_ed25519"
             mode: "0600"
             remote_src: true
+            unsafe_writes: true # 同上，目的地在 WSL2 掛載的 /mnt/c/...（DrvFS），atomic_move 在這種掛載點上會直接失敗
 
         - name: 複製 charlie 的 client 公鑰
           ansible.builtin.copy:
@@ -233,6 +250,7 @@
             dest: "{{ windows_home_path }}/.ssh/{{ vm_name }}_{{ vm_user }}_ed25519.pub"
             mode: "0644"
             remote_src: true
+            unsafe_writes: true
 
         - name: 把 VM 的 host key fingerprint 加進 Windows 原生環境真正的 known_hosts（不是複製一份獨立檔案，是直接 append 這一行；已經加過就不會重複加，也不會動到裡面其他主機原本的紀錄）
           ansible.builtin.lineinfile:
@@ -240,6 +258,7 @@
             line: "[{{ wireguard_vm_address }}]:{{ vm_ssh_port }} {{ (vm_ssh_host_pubkey_raw.content | b64decode).strip() }}"
             create: true
             mode: "0600"
+            unsafe_writes: true
 
         - name: 印出 Windows 那邊還要做的事
           ansible.builtin.debug:

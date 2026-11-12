@@ -45,7 +45,7 @@ d-i base-installer/kernel/image string linux-image-amd64
 
 ### Package selection
 tasksel tasksel/first multiselect standard
-d-i pkgsel/include string openssh-server sudo open-vm-tools wireguard-tools
+d-i pkgsel/include string openssh-server sudo open-vm-tools wireguard-tools ufw chrony
 d-i pkgsel/upgrade select none
 popularity-contest popularity-contest/participate boolean false
 
@@ -106,6 +106,37 @@ d-i finish-install/reboot_in_progress note
 ### 把 charlie 加進 sudo group，跑完自己刪除自己——預設安全姿態完全不變，
 ### 純粹是多留一條「使用者自己選擇要不要開」的退路。只複製檔案、不執行，
 ### 執行與否由 charlie 自己決定。
+###
+### 下面這段（inotify / chrony / ufw）是直接烘焙進每一台 VM 的基礎設施調整，
+### 不是這台 VM 專屬的身分資料，所以不像 SSH host key / wg0.conf 需要每台各自
+### 一份——裝機當下寫死即可，裝多少台都是同一份設定：
+###
+### - inotify：調高 fs.inotify.max_user_watches/max_user_instances，避免之後
+###   這台機器上要是跑了監看大量檔案的服務（例如 Kubernetes 相關元件）動不動
+###   就報 "Too many open files"。寫進 /etc/sysctl.d/，開機時 systemd-sysctl
+###   服務會自動套用，這裡不用另外呼叫 sysctl --system。
+###
+### - chrony：取代 systemd-timesyncd 校時，對外對準 time.stdtime.gov.tw +
+###   pool.ntp.org，同時 allow {{ wireguard_peer_subnet }}，讓這台機器也能被
+###   同一個 WireGuard 網段裡的其他機器當 NTP peer 使用。makestep 放寬成
+###   「只要落差超過 1 秒、不限次數都允許直接 step」（預設只有開機後前幾次
+###   才給這個額度），避免 VM 時鐘因為 host 暫停/搬遷等原因飄掉之後再也追不回來。
+###
+### - ufw：預設 deny incoming / allow outgoing，只開三種東西：(1) WireGuard
+###   自己的 UDP 監聽埠——這個必須對任何來源開放，不能限定成只准
+###   {{ wireguard_peer_subnet }}，因為 WireGuard 的 handshake 封包本來就是從
+###   peer 還沒加入隧道前的真實來源位址打過來的，隧道要先通才會有
+###   {{ wireguard_peer_subnet }} 這個位址，限定來源等於自己把隧道堵死；
+###   (2) SSH port，限定只准 {{ wireguard_peer_subnet }}——跟 sshd 自己的
+###   ListenAddress 鎖定是同一個不變量（SSH 全程只能從這個網段進來，沒有任何
+###   例外窗口），ufw 只是再加一層、不是另開例外；(3) chrony 的 123/udp，
+###   也限定只准 {{ wireguard_peer_subnet }}，對應上面 chrony 的 allow 設定。
+###   這裡故意不呼叫互動式的「ufw enable」——late_command 跑在 d-i 安裝環境
+###   自己的 chroot 裡，跟真正開機後的系統共用同一個 kernel/network
+###   namespace，貿然在這個階段把規則即時套用到 live 的 iptables 有風險；
+###   改成直接寫 ufw.conf 的 ENABLED=yes 設定檔 + enable systemd 服務，實際
+###   套用規則延後到 VM 第一次真正開機時才發生，跟這整段 late_command 一貫
+###   「只寫設定檔／enable 服務，不在裝機當下真的啟動東西」的做法一致。
 d-i preseed/late_command string \
   mkdir -p /target/home/{{ vm_user }}/.ssh; \
   echo 'from="{{ wireguard_peer_subnet }}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding {{ ssh_public_key }}' > /target/home/{{ vm_user }}/.ssh/authorized_keys; \
@@ -136,6 +167,22 @@ d-i preseed/late_command string \
   echo '[Unit]' > /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
   echo 'After=wg-quick@wg0.service' >> /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
   echo 'Requires=wg-quick@wg0.service' >> /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
+  echo 'fs.inotify.max_user_watches = 1048576' > /target/etc/sysctl.d/99-inotify.conf; \
+  echo 'fs.inotify.max_user_instances = 8192' >> /target/etc/sysctl.d/99-inotify.conf; \
+  sed -i '/^\(pool\|server\|makestep\) /s/^/# /' /target/etc/chrony/chrony.conf; \
+  echo 'server time.stdtime.gov.tw iburst' >> /target/etc/chrony/chrony.conf; \
+  echo 'pool pool.ntp.org iburst' >> /target/etc/chrony/chrony.conf; \
+  echo 'allow {{ wireguard_peer_subnet }}' >> /target/etc/chrony/chrony.conf; \
+  echo 'makestep 1 -1' >> /target/etc/chrony/chrony.conf; \
+  in-target systemctl disable systemd-timesyncd; \
+  in-target systemctl enable chrony; \
+  in-target ufw default deny incoming; \
+  in-target ufw default allow outgoing; \
+  in-target ufw allow from 192.168.0.0/24 to any port {{ wireguard_listen_port }} proto udp; \ 
+  in-target ufw allow from {{ wireguard_peer_subnet }} to any port {{ ssh_port }} proto tcp; \
+  in-target ufw allow from {{ wireguard_peer_subnet }} to any port 123 proto udp; \
+  sed -i 's/^ENABLED=.*/ENABLED=yes/' /target/etc/ufw/ufw.conf; \
+  in-target systemctl enable ufw; \
   parted -s /dev/sdb mklabel gpt mkpart primary ext4 0% 100%; \
   partprobe /dev/sdb; \
   udevadm settle; \
