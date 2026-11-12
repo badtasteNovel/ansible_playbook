@@ -43,7 +43,10 @@ tasks:
         # 「把目前這台機器認領成 peer」刻意不在這裡問、也不在這裡做——認領
         # 需要填 VM 的 Endpoint（真實 IP），但這個當下 VM 根本還沒開機，
         # 不可能知道 IP。等 VM 建好、開機、查到 IP 之後，另外跑 task add-peer。
-        peer_slot_count=$(gum input --placeholder "這次要新增幾個 WireGuard peer 位置？不需要就輸入 0" --value "0")
+        peer_slot_count=$(gum input --placeholder "這次要新增幾個 WireGuard peer 位置？不需要就留空")
+        if [ -z "$peer_slot_count" ]; then
+          peer_slot_count=0
+        fi
         if ! [[ "$peer_slot_count" =~ ^[0-9]+$ ]]; then
           echo "錯誤：peer 數量必須是非負整數" >&2
           exit 1
