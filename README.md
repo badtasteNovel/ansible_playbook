@@ -18,7 +18,7 @@ sh -c "$(curl -ssL https://taskfile.dev/install.sh)" -- -d -b /tmp && sudo mv /t
 task install
 ```
 
-這會幫你裝好剩下所有東西:`ansible-core`、`requirements.yml` 裡列的 collections(`community.crypto`、`ansible.posix`)、重新封裝 ISO 用的 `xorriso`、互動式選單用的 [`gum`](https://github.com/charmbracelet/gum)(走 Charm 官方 apt repo 裝)、解析 `manifest.json` 用的 `jq`,還有讓 build 流程可以非互動 SSH 進 ESXi 的 `sshpass`。
+這會幫你裝好剩下所有東西:`ansible-core`、`requirements.yml` 裡列的 collections(`community.crypto`、`ansible.posix`)、重新封裝 ISO 用的 `xorriso`、互動式選單用的 [`gum`](https://github.com/charmbracelet/gum)(走 Charm 官方 apt repo 裝)、解析 `manifest.json` 用的 `jq`、讓 build 流程可以非互動 SSH 進 ESXi 的 `sshpass`,還有本機產生 WireGuard 金鑰用的 `wireguard-tools`——每次 build 都一定會用到,見下面「WireGuard」。
 
 **另外還需要**:
 
@@ -31,7 +31,7 @@ task install
 2. 把 Debian ISO 放進 `custom/iso/debian/`(檔名對照 `custom/iso/manifest.json`)
 3. `task verify-iso` —— 驗證這顆 ISO 是官方未竄改的版本(細節見腳本註解,全程即時向 `debian.org` 官方來源核對,不信任任何本地快取的金鑰)
 4. `cp custom/.env.example custom/.env`,照下面的說明把值填好
-5. `task build:debian` —— 產生 client/host 兩組 SSH 金鑰 → 渲染 preseed.cfg → 重新封裝 ISO → 渲染 `.vmx` → SSH 上傳 ISO、`.vmx` 到 datastore、用 `vmkfstools` 建虛擬磁碟。跑完之後還有幾個手動步驟,見下面「VM 建好之後怎麼辦」。
+5. `task build:debian` —— 先問要不要把目前這台機器加進這台新 VM 的 WireGuard 點對點網路、成為一個 peer(見下面「WireGuard」;這一步只決定要不要加入 peer,VM 本身一定會是 WireGuard server,沒有不開的選項),接著產生 client/host 兩組 SSH 金鑰 → 渲染 preseed.cfg → 重新封裝 ISO → 渲染 `.vmx` → SSH 上傳 ISO、`.vmx` 到 datastore、用 `vmkfstools` 建虛擬磁碟。跑完之後還有幾個手動步驟,見下面「VM 建好之後怎麼辦」。
 
 ## VM 建好之後怎麼辦
 
@@ -40,11 +40,11 @@ task install
 1. **登入 ESXi 的 Host Client 網頁介面**,瀏覽 datastore,找到 `/vmfs/volumes/<你的 datastore>/debian-vm/debian-vm.vmx`,右鍵 **Register VM**
 2. 手動 **Power On**——preseed 會全自動跑完整個安裝,不用再管它,等個幾分鐘
 3. 裝完之後,自己去 VM 的 Console 畫面查一下它的 IP(走 DHCP,不是固定的)
-4. **SSH port 不是預設的 22,是 `52222`**(躲開公開掃描,也避開跟其他服務的 port 衝突,見 `build_vm/debian.yml` 的 `vm_ssh_port`)。把輸出訊息裡 `[vm的ip]` 換成實際 IP,整行貼進 `custom/keys/known_hosts`。例如輸出是:
+4. **SSH port 不是預設的 22,是 `52222`**(躲開公開掃描,也避開跟其他服務的 port 衝突,見 `playbook/control-panel/debian.yml` 的 `vm_ssh_port`)。把輸出訊息裡 `[vm的ip]` 換成實際 IP,整行貼進 `custom/generated/keys/known_hosts`。例如輸出是:
    ```
    [vm的ip]:52222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEm0+nrgRT6SyzX2uMXULQtLavs1MkrIqkfHpZgvVHNO debian-vm
    ```
-   查到 IP 是 `192.168.1.50`,就把這一行貼進 `custom/keys/known_hosts`:
+   查到 IP 是 `192.168.1.50`,就把這一行貼進 `custom/generated/keys/known_hosts`:
    ```
    [192.168.1.50]:52222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEm0+nrgRT6SyzX2uMXULQtLavs1MkrIqkfHpZgvVHNO debian-vm
    ```
@@ -52,10 +52,30 @@ task install
 
 5. 之後就能直接連線:
    ```
-   ssh -i custom/keys/charlie_ed25519 -p 52222 -o UserKnownHostsFile=custom/keys/known_hosts charlie@<VM 的 IP>
+   ssh -i custom/generated/keys/charlie_ed25519 -p 52222 -o UserKnownHostsFile=custom/generated/keys/known_hosts charlie@<VM 的 IP>
    ```
 
 **注意**:第 1、2 步(Register VM、Host Client)是 **ESXi 專屬操作**,因為目前整套方案是建立在 `.vmx`/`vmkfstools` 這些 VMware 專有格式跟工具上。以後如果換成別的虛擬化平台,這幾步跟對應的 playbook 都要重寫成那個平台的版本。
+
+**上面第 4 步跟連線範例裡的 IP 要填 `10.105.0.1`(WireGuard 隧道位址),不是 VM 的 LAN IP**——VM 的 sshd 已經設定成只監聽這個位址,這不是選用行為,每一次 build 都一樣。VM 的 LAN IP 還是要查出來,但只有一個用途:填進 `playbook/wsl/add-peer.yml` 產生的 `/etc/wireguard/wg0.conf` 的 `Endpoint`,細節見下一節。
+
+## WireGuard
+
+**每一台用這個專案建出來的 VM 都一定是 WireGuard server,沒有不開的選項**——沒有 `enable_wireguard` 這種開關,VM 的 sshd 一定只監聽 WireGuard 隧道位址(`10.105.0.1`),不接受從它 LAN IP 來的連線。
+
+`task build:debian` 唯一會問的,是另一件事:**要不要把目前這台機器加進這台新 VM 的 WireGuard 點對點網路,成為一個 peer**。選「是」的話:
+
+1. 立刻執行 `ansible-playbook playbook/wsl/add-peer.yml`——幫**這台機器**(不是 VM)裝 `wireguard-tools`、產生一組只屬於它的 WireGuard 金鑰、寫一份 `/etc/wireguard/wg0.conf`(需要 `sudo`)。這是目前整個專案裡唯一一支會動到「執行 Ansible 這台機器自己」系統設定的 playbook,其他地方都只動 `custom/` 底下的本地檔案,或是透過 SSH 動遠端的 ESXi/VM。取名叫 `add-peer` 而不是 `agent`,是刻意避開「這台機器會變成某個 cluster 的 agent 節點」這種誤解——目前這個專案根本還沒佈署任何 cluster(例如 k3s),純粹只是把一台機器加進 WireGuard 的點對點網路而已。
+2. VM 那邊(`playbook/control-panel/debian.yml`,這台 VM 之所以叫 "control-panel" 正是因為它同時是 WireGuard server)一定會產生自己的 WireGuard 金鑰,連同兩邊共用的 PresharedKey 一起寫進 `wg0.conf`,透過 preseed 塞進 VM、裝機時自動 `systemctl enable wg-quick@wg0`——即使你這次選「否」、沒有加入任何 peer,VM 還是會完整做這件事,只是 `wg0.conf` 裡那個預先產生好的 peer 金鑰暫時沒有任何一台真實機器拿去用而已。
+3. VM 的 `sshd_config` 永遠是 `ListenAddress 10.105.0.1`(只接受從 WireGuard 隧道來的連線),而且一定會裝一個 systemd drop-in,讓 `ssh.service` 依賴 `wg-quick@wg0.service`——確保 VM 開機時一定是先有隧道、sshd 才啟動,不會卡在「隧道還沒起來但 sshd 已經試著綁定那個位址」的狀態。
+
+**這個設計刻意接受的風險**:這台 VM 本來就沒有密碼、沒有任何救援路徑(見上面專案說明)——如果 WireGuard 設定本身出錯(金鑰對不上、systemd 相依關係寫錯……），結果是 sshd 永遠起不來,連 ESXi 的 Console 畫面都幫不上忙,因為帳號根本沒有密碼可以輸入。這台 VM 本來就假定是「可以隨時刪掉重建」的一次性環境,接受這個風險等同於接受專案原本的設計前提,不是額外引入的新問題。
+
+**如果你選了「是」、把目前這台機器加成 peer,VM 建好、開機、查到 IP 之後,還有一步手動的**(`wg0.conf` 的 `Endpoint` 現在還不知道 VM 會拿到哪個 DHCP IP,沒辦法自動填):
+
+1. 編輯 `/etc/wireguard/wg0.conf`,把 `# Endpoint = <VM的IP>:51820` 這行的註解拿掉,`<VM的IP>` 換成實際查到的 IP
+2. `sudo wg-quick up wg0`(如果之前已經 up 過,先 `sudo wg-quick down wg0` 再 up 一次讓新設定生效)
+3. 之後 SSH 連線要改連 `10.105.0.1`,不是 VM 的 LAN IP——`known_hosts`/連線範例的寫法見上一節
 
 ## `custom/.env` 要填什麼
 

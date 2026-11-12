@@ -1,0 +1,102 @@
+---
+# 把目前這台機器（WSL2 控制節點）加進 debian-vm 的 WireGuard 點對點網路，成為一個 peer。
+#
+# 不需要指定名字——用 glob 在 custom/generated/keys/wireguard-keys/wireguard_peers/
+# 底下找一個「還沒被任何機器認領」的 peer 位置來用（見 roles/wireguard_keys/tasks/
+# claim_peer.yml），認領到之後寫一個 claimed 標記，避免兩台機器搶到同一組金鑰。
+# peer 位置本身是 control-panel/debian.yml 用 peer_slot_count 批次產生的——如果
+# 這裡找不到任何還沒被認領的位置，代表要嘛數量用完了、要嘛根本還沒產生過，
+# 必須先重新 build 一次、要幾個新的位置。
+#
+# 叫做 add-peer 而不是 agent，是刻意的：這台機器只是被加進 WireGuard 的點對點網路，
+# 不代表它會變成某個 cluster（例如 k3s）裡聽 VM 指揮的 agent 節點——目前這個專案
+# 根本還沒佈署任何 cluster，純粹是 WireGuard 的用詞選擇問題。
+#
+# VM 自己的 WireGuard 身分只歸 playbook/control-panel/debian.yml 管——這支
+# playbook 只負責「把某台機器加入成為 peer」，不跨界幫忙產生 VM 的金鑰。如果
+# VM 的金鑰還不存在（代表 control-panel 從來沒跑過），這裡會直接報錯，請先跑
+# 一次 task build:debian，而不是在這裡偷偷補一個出來。
+#
+# 這是目前整個專案裡唯一一支會動到「執行 Ansible 這台機器自己」系統設定的 playbook
+# （寫 /etc/wireguard/wg0.conf），所以需要 sudo；其他地方都只動 custom/ 底下的本地
+# 檔案，或是透過 SSH 動遠端的 ESXi/VM。wireguard-tools 本身不在這裡裝，是
+# task install（install:wireguard-tools）先裝好的，這裡假設它已經存在。
+#
+# wg0.conf 裡的 [Peer] Endpoint 刻意留空（用註解佔位）——VM 現在還沒開機，不知道它
+# DHCP 會拿到哪個 IP。VM 建好、查到 IP 之後，照這支 playbook 最後印出的提示手動補上。
+
+- name: 把這台機器加進 debian-vm 的 WireGuard 點對點網路
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    keys_dir: "{{ playbook_dir }}/../../custom/generated/keys"
+    wireguard_keys_base_dir: "{{ keys_dir }}/wireguard-keys" # custom/generated/keys/ 底下按用途分的子資料夾之一
+    wireguard_peers_dir: "{{ wireguard_keys_base_dir }}/wireguard_peers"
+    wireguard_vm_address: "10.105.0.1"
+    wireguard_listen_port: 51820
+
+  tasks:
+    - name: 確認 VM 自己的 WireGuard 金鑰已經存在（VM 的身分只歸 control-panel/debian.yml 管，這裡不幫忙產生）
+      ansible.builtin.stat:
+        path: "{{ wireguard_keys_base_dir }}/debian-vm_wireguard.pub"
+      register: wireguard_vm_pubkey_stat
+
+    - name: 擋下「VM 金鑰還不存在」的情況
+      ansible.builtin.assert:
+        that: wireguard_vm_pubkey_stat.stat.exists
+        fail_msg: "找不到 {{ wireguard_keys_base_dir }}/debian-vm_wireguard.pub，請先跑過一次 task build:debian（或 ansible-playbook playbook/control-panel/debian.yml）"
+
+    - name: 認領一個還沒被用過的 peer 位置
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/claim_peer.yml"
+
+    - name: 讀取認領到的 peer 的 WireGuard 私鑰
+      ansible.builtin.slurp:
+        src: "{{ wireguard_peers_dir }}/{{ claimed_peer_name }}/private"
+      register: wireguard_peer_private_key_raw
+
+    - name: 讀取認領到的 peer 配到的 IP
+      ansible.builtin.slurp:
+        src: "{{ wireguard_peers_dir }}/{{ claimed_peer_name }}/address"
+      register: wireguard_peer_address_raw
+
+    - name: 讀取認領到的 peer 專用的 PresharedKey
+      ansible.builtin.slurp:
+        src: "{{ wireguard_peers_dir }}/{{ claimed_peer_name }}/psk"
+      register: wireguard_peer_psk_raw
+
+    - name: 讀取 debian-vm 的 WireGuard 公鑰
+      ansible.builtin.slurp:
+        src: "{{ wireguard_keys_base_dir }}/debian-vm_wireguard.pub"
+      register: wireguard_vm_public_key_raw
+
+    - name: 確保 /etc/wireguard/ 存在
+      become: true
+      ansible.builtin.file:
+        path: /etc/wireguard
+        state: directory
+        mode: "0700"
+
+    - name: 渲染這台機器的 wg0.conf
+      become: true
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../roles/wireguard_agent/templates/wg0.conf.j2"
+        dest: /etc/wireguard/wg0.conf
+        mode: "0600"
+      vars:
+        wireguard_private_key: "{{ (wireguard_peer_private_key_raw.content | b64decode).strip() }}"
+        wireguard_agent_address: "{{ (wireguard_peer_address_raw.content | b64decode).strip() }}"
+        wireguard_peer_public_key: "{{ (wireguard_vm_public_key_raw.content | b64decode).strip() }}"
+        wireguard_preshared_key: "{{ (wireguard_peer_psk_raw.content | b64decode).strip() }}"
+
+    - name: 印出後續手動步驟
+      ansible.builtin.debug:
+        msg:
+          - "這台機器認領到的 peer 是 {{ claimed_peer_name }}，WireGuard 設定已經寫到 /etc/wireguard/wg0.conf，但還沒啟用。"
+          - "因為 VM 現在還沒開機，不知道它的 Endpoint（IP），所以 [Peer] 區塊裡的 Endpoint 先用註解佔位。"
+          - "等 VM 建好、開機、查到 IP 之後："
+          - "1. 編輯 /etc/wireguard/wg0.conf，把 '# Endpoint = <VM的IP>:{{ wireguard_listen_port }}' 這行的註解拿掉，<VM的IP> 換成實際 IP"
+          - "2. sudo wg-quick up wg0（如果之前已經 up 過，先 sudo wg-quick down wg0 再 up 一次讓設定生效）"
+          - "3. 之後 SSH 到 VM 要改連 {{ wireguard_vm_address }}，不是它的 LAN IP——VM 的 sshd 已經只監聽 WireGuard 這個位址"

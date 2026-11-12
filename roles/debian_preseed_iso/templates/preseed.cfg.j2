@@ -45,7 +45,7 @@ d-i base-installer/kernel/image string linux-image-amd64
 
 ### Package selection
 tasksel tasksel/first multiselect standard
-d-i pkgsel/include string openssh-server sudo open-vm-tools
+d-i pkgsel/include string openssh-server sudo open-vm-tools wireguard-tools
 d-i pkgsel/upgrade select none
 popularity-contest popularity-contest/participate boolean false
 
@@ -59,10 +59,19 @@ d-i finish-install/reboot_in_progress note
 ### Late command — 寫入 SSH 公鑰、關閉密碼登入、開 NOPASSWD sudo（反正沒有密碼可輸入）、
 ### 換掉 openssh-server 自動生成的 host key，改用控制端預先產生好的那一組
 ### （/cdrom/ssh_host_key、/cdrom/ssh_host_key.pub 是 remaster-iso.sh 塞進 ISO 根目錄的檔案，
-### 用複製檔案而不是在這裡塞金鑰內容，是為了避開私鑰裡的換行在這種單行 shell 指令字串裡轉義的問題）
+### 用複製檔案而不是在這裡塞金鑰內容，是為了避開私鑰裡的換行在這種單行 shell 指令字串裡轉義的問題）；
+### 同一招也用在 wg0.conf 上。這台 VM 一定會被設成 WireGuard server，sshd 也一定會被鎖定成
+### 只監聽 WireGuard 位址，所以下面這段完全沒有條件判斷，每次裝機都會執行。
+###
+### authorized_keys 那行前面的 from="..."/no-*-forwarding 是 OpenSSH 的
+### authorized_keys 選項（寫在金鑰內容前面，逗號分隔），多一層限制：這把
+### charlie 的 client 金鑰只接受從 WireGuard peer 子網（wireguard_peer_subnet）
+### 連進來的連線才能用來登入，而且不能拿去做連線轉發／X11／agent forwarding。
+### 用整個子網段而不是單一 peer 的 IP，是因為這把金鑰是共用的一把，不是每個
+### peer 各自一把——鎖死某一個 peer 的 IP，其他後來加入的 peer 反而會被擋掉。
 d-i preseed/late_command string \
   mkdir -p /target/home/{{ vm_user }}/.ssh; \
-  echo '{{ ssh_public_key }}' > /target/home/{{ vm_user }}/.ssh/authorized_keys; \
+  echo 'from="{{ wireguard_peer_subnet }}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding {{ ssh_public_key }}' > /target/home/{{ vm_user }}/.ssh/authorized_keys; \
   chmod 700 /target/home/{{ vm_user }}/.ssh; \
   chmod 600 /target/home/{{ vm_user }}/.ssh/authorized_keys; \
   in-target chown -R {{ vm_user }}:{{ vm_user }} /home/{{ vm_user }}/.ssh; \
@@ -75,4 +84,16 @@ d-i preseed/late_command string \
   cp /cdrom/ssh_host_key.pub /target/etc/ssh/ssh_host_ed25519_key.pub; \
   chmod 600 /target/etc/ssh/ssh_host_ed25519_key; \
   chmod 644 /target/etc/ssh/ssh_host_ed25519_key.pub; \
-  chown root:root /target/etc/ssh/ssh_host_ed25519_key /target/etc/ssh/ssh_host_ed25519_key.pub
+  chown root:root /target/etc/ssh/ssh_host_ed25519_key /target/etc/ssh/ssh_host_ed25519_key.pub; \
+  mkdir -p /target/etc/wireguard; \
+  cp /cdrom/wg0.conf /target/etc/wireguard/wg0.conf; \
+  chmod 600 /target/etc/wireguard/wg0.conf; \
+  chown root:root /target/etc/wireguard/wg0.conf; \
+  in-target systemctl enable wg-quick@wg0; \
+  sed -i '/^ListenAddress /d' /target/etc/ssh/sshd_config; \
+  echo 'ListenAddress {{ wireguard_vm_address }}' >> /target/etc/ssh/sshd_config; \
+  mkdir -p /target/etc/systemd/system/ssh.service.d; \
+  echo '[Unit]' > /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
+  echo 'After=wg-quick@wg0.service' >> /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
+  echo 'Requires=wg-quick@wg0.service' >> /target/etc/systemd/system/ssh.service.d/wireguard.conf; \
+  true

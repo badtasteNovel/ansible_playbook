@@ -1,9 +1,8 @@
 # custom/iso/ 自己有獨立的 .gitignore 管 ISO 本體，這裡不用重複管
 
-# playbook 執行時產生的東西（客製化 ISO、preseed.cfg 等），跟 custom/iso/ 來源分開放
+# playbook 執行時產生的東西（客製化 ISO、preseed.cfg、SSH/WireGuard 金鑰等），
+# 都在 custom/generated/ 底下，各自用 scoped .gitignore（* + !.gitignore）管，
+# 跟 custom/iso/ 來源分開放，這裡不用重複管
 
 # ESXi 連線密碼等機密，只保留 custom/.env.example 當範本
 custom/.env
-
-# 產生出來的 SSH 金鑰對（私鑰、公鑰都不進版控，重新跑 playbook 就會再生）
-custom/keys/

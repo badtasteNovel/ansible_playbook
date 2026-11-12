@@ -41,6 +41,13 @@ tasks:
       - sudo apt-get update
       - sudo apt-get install -y sshpass
 
+  wireguard-tools:
+    desc: "安裝 wireguard-tools（本機要用 wg genkey/genpsk 產生 WireGuard 金鑰，WSL agent 模式也要靠它建隧道）"
+    silent: true
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y wireguard-tools
+
   default:
     desc: "安裝開發這個專案所需的所有工具"
     cmds:
@@ -49,3 +56,4 @@ tasks:
       - task: gum
       - task: jq
       - task: sshpass
+      - task: wireguard-tools

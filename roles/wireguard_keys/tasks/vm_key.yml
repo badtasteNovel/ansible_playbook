@@ -1,0 +1,21 @@
+---
+# 只產生 VM 自己的 WireGuard 金鑰對，跟 peer 金鑰完全分開——VM 一定需要自己
+# 的身分，不管現在有沒有任何 peer 存在；peer 金鑰的產生/數量是完全獨立的事，
+# 見 peer_key.yml。playbook/control-panel/debian.yml 跟 playbook/wsl/add-peer.yml
+# 都會呼叫這個檔案（add-peer.yml 需要先知道 VM 的公鑰才能組出自己的 wg0.conf，
+# 即使 control-panel 還沒跑過也一樣）——idempotent，不管哪邊先跑都行。
+
+- name: 確保 {{ wireguard_keys_dir }} 存在
+  ansible.builtin.file:
+    path: "{{ wireguard_keys_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: 產生 VM 自己的 WireGuard 金鑰對（若已存在則不重建）
+  ansible.builtin.shell: |
+    set -euo pipefail
+    umask 077
+    wg genkey | tee {{ wireguard_keys_dir }}/debian-vm_wireguard | wg pubkey > {{ wireguard_keys_dir }}/debian-vm_wireguard.pub
+  args:
+    executable: /bin/bash # /bin/sh（dash）不支援 pipefail，這裡用到 wg genkey | tee | wg pubkey 的管線，一定要 bash
+    creates: "{{ wireguard_keys_dir }}/debian-vm_wireguard"

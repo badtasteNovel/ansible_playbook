@@ -1,6 +1,6 @@
 {
   "debian": {
     "iso-path": "debian/debian-13.7.0-amd64-netinst.iso",
-    "build-path": "build_vm/debian.yml"
+    "build-path": "playbook/control-panel/debian.yml"
   }
 }

@@ -1,0 +1,61 @@
+---
+# 在 wireguard_peers_dir 底下新增一個匿名的 peer 位置：自己的金鑰對、
+# PresharedKey、配到的 IP。目錄名稱用遞增數字（peer1、peer2、...），純粹是
+# 識別碼，建立的時候還不知道將來會被哪台機器拿去用——由誰認領是
+# claim_peer.yml 的事，兩者刻意分開（見 roles/wireguard_keys/tasks/claim_peer.yml
+# 開頭的說明）。
+#
+# 用 Ansible 既有的 find 模組 + Jinja filter 算下一個編號/IP，不額外寫 shell
+# 腳本：IP 直接由編號推算（peerN → 10.105.0.(N+1)），不需要讀任何既有
+# address 檔案的內容來算——只要抓到「目前最大的 peer 編號」就夠了。
+#
+# 呼叫前要先 set 好 wireguard_peers_dir。
+
+- name: 確保 {{ wireguard_peers_dir }} 存在
+  ansible.builtin.file:
+    path: "{{ wireguard_peers_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: 列出目前已經存在的 peer 目錄
+  ansible.builtin.find:
+    paths: "{{ wireguard_peers_dir }}"
+    file_type: directory
+  register: existing_peer_dirs
+
+- name: 算出下一個可用的 peer 編號（目錄名稱取 peerN 的 N，取最大值 +1；非 peerN 格式的目錄名稱會被濾掉，當作 0 處理）
+  ansible.builtin.set_fact:
+    new_peer_index: "{{ (existing_peer_dirs.files | map(attribute='path') | map('basename') | map('regex_replace', '^peer(\\d+)$', '\\1') | select('match', '^[0-9]+$') | map('int') | list + [0]) | max + 1 }}"
+
+- name: 拆出這次要用的 peer 名稱跟 IP（IP 由編號推算：.1 是 VM 自己用，.2 開始配給 peer）
+  ansible.builtin.set_fact:
+    new_peer_name: "peer{{ new_peer_index }}"
+    new_peer_address: "10.105.0.{{ new_peer_index | int + 1 }}"
+
+- name: 建立這個 peer 的目錄
+  ansible.builtin.file:
+    path: "{{ wireguard_peers_dir }}/{{ new_peer_name }}"
+    state: directory
+    mode: "0700"
+
+- name: 寫入這個 peer 配到的 IP
+  ansible.builtin.copy:
+    content: "{{ new_peer_address }}"
+    dest: "{{ wireguard_peers_dir }}/{{ new_peer_name }}/address"
+    mode: "0600"
+
+- name: 產生這個 peer 的 WireGuard 金鑰對
+  ansible.builtin.shell: |
+    set -euo pipefail
+    umask 077
+    wg genkey | tee {{ wireguard_peers_dir }}/{{ new_peer_name }}/private | wg pubkey > {{ wireguard_peers_dir }}/{{ new_peer_name }}/public
+  args:
+    executable: /bin/bash # /bin/sh（dash）不支援 pipefail，這裡用到 wg genkey | tee | wg pubkey 的管線，一定要 bash
+
+- name: 產生這個 peer 專用的 PresharedKey
+  ansible.builtin.shell: |
+    set -euo pipefail
+    umask 077
+    wg genpsk > {{ wireguard_peers_dir }}/{{ new_peer_name }}/psk
+  args:
+    executable: /bin/bash

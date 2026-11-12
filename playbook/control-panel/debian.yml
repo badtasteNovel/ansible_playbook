@@ -4,9 +4,16 @@
 #   1. 產生兩組 SSH 金鑰：client 端（charlie 登入用）跟 VM 自己的 host key
 #      （host key 預先產生、透過 ISO 塞進去蓋掉 openssh-server 開機時自動生成的那組，
 #      這樣 fingerprint 在裝機前就已經知道，不用等 VM 開機、SSH 起來才去 scan）
-#   2. 渲染 preseed.cfg、重新封裝 ISO（跟之前一樣，remaster-iso.sh 完全沒變邏輯）
-#   3. 渲染 .vmx
-#   4. SSH 進 hypervisor：建資料夾、scp 傳 ISO、scp 傳 .vmx、用 vmkfstools 建虛擬磁碟
+#   2. 產生 VM 自己的 WireGuard 金鑰，這台 VM 一定會被設成 WireGuard server
+#      （這也是它被叫做 control-panel 的原因）——不是選用功能。另外視 peer_slot_count
+#      新增對應數量的「匿名」peer 位置（還沒被任何機器認領，只是先把金鑰/IP 產生好）
+#      ——實際由哪台機器拿去用，是 playbook/wsl/add-peer.yml 用 glob 認領的事，
+#      這裡完全不管。接著掃描 custom/generated/keys/wireguard-keys/wireguard_peers/
+#      底下目前已經存在的每一個 peer（不管是這次新增的還是之前就有的），各自讀出
+#      自己的公鑰/PresharedKey/IP，動態組出 wg0.conf 的 [Peer] 區塊
+#   3. 渲染 preseed.cfg、重新封裝 ISO（跟之前一樣，remaster-iso.sh 完全沒變邏輯）
+#   4. 渲染 .vmx
+#   5. SSH 進 hypervisor：建資料夾、scp 傳 ISO、scp 傳 .vmx、用 vmkfstools 建虛擬磁碟
 #
 # 到這裡自動化就結束——VM 的「註冊」（register）跟「開機」刻意留給人工在 Host Client
 # 網頁介面上做，自動化程式碼完全不碰 ESXi 的管理層（inventory）。
@@ -27,13 +34,20 @@
     vm_disk_gb: 20
     vm_ssh_port: 52222 # 不用預設 22，躲開公開掃描，也避開跟其他服務（例如之後可能裝的 Kubernetes/Cilium）的 port 衝突
 
-    ssh_key_dir: "{{ playbook_dir }}/../custom/keys"
-    ssh_key_path: "{{ ssh_key_dir }}/{{ vm_user }}_ed25519" # VM 上 charlie 登入用的 client 金鑰
-    ssh_host_key_path: "{{ ssh_key_dir }}/{{ vm_name }}_host_ed25519" # VM 自己的 host key
-    hypervisor_known_hosts_path: "{{ ssh_key_dir }}/hypervisor_known_hosts"
-    known_hosts_path: "{{ ssh_key_dir }}/known_hosts" # 之後手動把 VM 的 IP 補進這個檔案
+    wireguard_vm_address: "10.105.0.1"
+    wireguard_peer_subnet: "10.105.0.0/24" # charlie 的 authorized_keys 用這個限制 from=，只接受從任一合法 WireGuard peer 連進來
+    wireguard_listen_port: 51820
+    peer_slot_count: 0 # 要新增幾個匿名 peer 位置，由 build:debian 的 gum input 透過 --extra-vars 決定
 
-    generated_dir: "{{ playbook_dir }}/../custom/generated"
+    keys_dir: "{{ playbook_dir }}/../../custom/generated/keys"
+    wireguard_keys_base_dir: "{{ keys_dir }}/wireguard-keys" # custom/generated/keys/ 底下按用途分的子資料夾之一
+    wireguard_peers_dir: "{{ wireguard_keys_base_dir }}/wireguard_peers" # 每個 peer 一個子目錄，見 roles/wireguard_keys/tasks/peer_key.yml
+    ssh_key_path: "{{ keys_dir }}/{{ vm_user }}_ed25519" # VM 上 charlie 登入用的 client 金鑰
+    ssh_host_key_path: "{{ keys_dir }}/{{ vm_name }}_host_ed25519" # VM 自己的 host key
+    hypervisor_known_hosts_path: "{{ keys_dir }}/hypervisor_known_hosts"
+    known_hosts_path: "{{ keys_dir }}/known_hosts" # 之後手動把 VM 的 IP 補進這個檔案
+
+    generated_dir: "{{ playbook_dir }}/../../custom/generated"
     preseed_output_dir: "{{ generated_dir }}/preseed/{{ vm_name }}" # 存放要塞進 ISO 的所有檔案（preseed.cfg + host key）
     iso_output_dir: "{{ generated_dir }}/iso/{{ vm_name }}"
     preseed_output_iso: "{{ iso_output_dir }}/{{ vm_name }}-preseed.iso"
@@ -68,13 +82,13 @@
           請確認 custom/.env 已填好必要連線資訊，且透過 --extra-vars 傳入
           iso_path（task select-iso 的輸出路徑）
 
-    - name: 確保 custom/keys/、custom/generated/preseed/、custom/generated/iso/ 目錄存在
+    - name: 確保 custom/generated/keys/、custom/generated/preseed/、custom/generated/iso/ 目錄存在
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         mode: "0700"
       loop:
-        - "{{ ssh_key_dir }}"
+        - "{{ keys_dir }}"
         - "{{ preseed_output_dir }}"
         - "{{ iso_output_dir }}"
 
@@ -110,9 +124,59 @@
         - { src: "{{ ssh_host_key_path }}", dest: ssh_host_key, mode: "0600" }
         - { src: "{{ ssh_host_key_path }}.pub", dest: ssh_host_key.pub, mode: "0644" }
 
+    - name: 確保 VM 自己的 WireGuard 金鑰已經產生（只有 VM 自己的身分，跟 peer 金鑰完全分開）
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/vm_key.yml"
+      vars:
+        wireguard_keys_dir: "{{ wireguard_keys_base_dir }}"
+
+    - name: 新增 {{ peer_slot_count }} 個匿名的 WireGuard peer 位置（還沒被任何機器認領，數量由 custom/scripts/tasks/build-vm.yaml 的 gum input 決定）
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/generate_one_peer_slot.yml"
+      loop: "{{ range(0, peer_slot_count | int) | list }}"
+      loop_control:
+        label: "第 {{ item + 1 }} 個"
+      when: (peer_slot_count | int) > 0
+
+    - name: 讀取 VM 自己的 WireGuard 私鑰
+      ansible.builtin.slurp:
+        src: "{{ wireguard_keys_base_dir }}/debian-vm_wireguard"
+      register: wireguard_vm_private_key_raw
+
+    - name: 列出目前已經存在的 WireGuard peer 目錄（數量不固定，可能是 0 個）
+      ansible.builtin.find:
+        paths: "{{ wireguard_peers_dir }}"
+        file_type: directory
+      register: wireguard_peer_dirs
+
+    - name: 讀出每個 peer 的公鑰／PresharedKey／IP，組成清單（給 wg0.conf.j2 的 Peer 迴圈用）
+      ansible.builtin.set_fact:
+        wireguard_peers: "{{ wireguard_peers | default([]) + [{
+          'name': item.path | basename,
+          'public_key': lookup('file', item.path + '/public') | trim,
+          'preshared_key': lookup('file', item.path + '/psk') | trim,
+          'address': lookup('file', item.path + '/address') | trim,
+        }] }}"
+      loop: "{{ wireguard_peer_dirs.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: 渲染 VM 的 wg0.conf，放進 ISO 注入資料夾（Peer 區塊數量跟著 wireguard_peers 走，可能是 0 個）
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../roles/wireguard_control_panel/templates/wg0.conf.j2"
+        dest: "{{ preseed_output_dir }}/wg0.conf"
+        mode: "0600"
+      vars:
+        wireguard_private_key: "{{ (wireguard_vm_private_key_raw.content | b64decode).strip() }}"
+        # wireguard_peers 不在這裡重新宣告——理由跟之前 enable_wireguard 那次
+        # 踩到的坑一樣：task 的 vars: 裡用同名又參照自己會造成無窮遞迴
+        # templating。wireguard_peers 這個 fact 本來就看得到（一個 peer 都
+        # 沒有時完全不會被 set_fact 設到，是 undefined，不是空字串／false，
+        # 所以 wg0.conf.j2 裡用 `wireguard_peers | default([])` 接住就好）。
+
     - name: 渲染 preseed.cfg
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../roles/debian_preseed_iso/templates/preseed.cfg.j2"
+        src: "{{ playbook_dir }}/../../roles/debian_preseed_iso/templates/preseed.cfg.j2"
         dest: "{{ preseed_output_dir }}/preseed.cfg"
         mode: "0600"
       vars:
@@ -123,7 +187,7 @@
     - name: 重新封裝 ISO，塞入 preseed.cfg、host key 並改開機參數
       ansible.builtin.command:
         cmd: >
-          {{ playbook_dir }}/../custom/scripts/remaster-iso/debian.sh
+          {{ playbook_dir }}/../../custom/scripts/remaster-iso/debian.sh
           {{ iso_path }}
           {{ preseed_output_dir }}
           {{ preseed_output_iso }}
@@ -132,7 +196,7 @@
 
     - name: 渲染 .vmx
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../roles/debian_preseed_iso/templates/debian.vmx.j2"
+        src: "{{ playbook_dir }}/../../roles/debian_preseed_iso/templates/debian.vmx.j2"
         dest: "{{ vmx_output_path }}"
         mode: "0600"
 
@@ -188,3 +252,7 @@
           - "使用者：{{ vm_user }}"
           - "私鑰：{{ ssh_key_path }}"
           - "連線範例：ssh -i {{ ssh_key_path }} -p {{ vm_ssh_port }} -o UserKnownHostsFile={{ known_hosts_path }} {{ vm_user }}@<VM的IP>"
+          - "⚠ 這台 VM 的 sshd 已經設定成只監聽 WireGuard 位址（{{ wireguard_vm_address }}），不是它的 LAN IP——"
+          - "上面第 4 步、連線範例裡的 <VM的IP>／[vm的ip]，都要填 {{ wireguard_vm_address }}，不是 VM 實際的 LAN IP。"
+          - "VM 的 LAN IP 還是要查出來，但只有一個用途：填進 playbook/wsl/add-peer.yml 產生的 /etc/wireguard/wg0.conf 的 Endpoint（照那支 playbook 執行完印出的提示做）。"
+          - "沒有先把 WireGuard 隧道接通（在加入 peer 的那台機器上 sudo wg-quick up wg0），上面的 SSH 連線範例不會動——這是設計上的取捨，不是 bug。"

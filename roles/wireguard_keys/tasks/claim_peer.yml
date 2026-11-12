@@ -1,0 +1,43 @@
+---
+# 從 wireguard_peers_dir 底下用 glob 找一個「還沒被任何機器認領」的 peer 位置來
+# 認領：找到之後在該 peer 目錄裡寫一個 claimed 檔案做標記（內容是認領者的
+# hostname + 時間），避免兩台機器（或同一台機器重跑兩次）搶到同一組金鑰。
+# 認領到的 peer 名稱存進 claimed_peer_name 這個 fact，呼叫端用這個去讀
+# {{ wireguard_peers_dir }}/{{ claimed_peer_name }}/ 底下的金鑰內容。
+#
+# 刻意跟「產生新的 peer 位置」（generate_one_peer_slot.yml）分開：產生位置是
+# 在建 VM 的時候批次做的，數量由使用者決定；認領位置是某一台機器真正要用
+# WireGuard 的時候才做的，兩件事的時機、呼叫的地方都不一樣。
+#
+# 呼叫前要先 set 好 wireguard_peers_dir。
+
+- name: 列出所有已存在的 peer 目錄
+  ansible.builtin.find:
+    paths: "{{ wireguard_peers_dir }}"
+    file_type: directory
+  register: all_peer_dirs
+
+- name: 檢查每個 peer 目錄有沒有被認領過（有沒有 claimed 檔案）
+  ansible.builtin.stat:
+    path: "{{ item.path }}/claimed"
+  loop: "{{ all_peer_dirs.files }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: peer_claimed_stats
+
+- name: 擋下「沒有任何還沒被認領的 peer」的情況
+  ansible.builtin.assert:
+    that: peer_claimed_stats.results | rejectattr('stat.exists') | list | length > 0
+    fail_msg: >-
+      {{ wireguard_peers_dir }} 底下找不到任何還沒被認領的 peer（可能是數量用完了，
+      或是還沒產生過）——請先用 control-panel 的流程多產生幾個 peer 位置。
+
+- name: 挑第一個還沒被認領的 peer
+  ansible.builtin.set_fact:
+    claimed_peer_name: "{{ (peer_claimed_stats.results | rejectattr('stat.exists') | map(attribute='item') | first).path | basename }}"
+
+- name: 寫入認領標記
+  ansible.builtin.copy:
+    content: "claimed by {{ lookup('pipe', 'hostname') }} at {{ lookup('pipe', 'date -Iseconds') }}\n"
+    dest: "{{ wireguard_peers_dir }}/{{ claimed_peer_name }}/claimed"
+    mode: "0600"

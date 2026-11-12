@@ -1,0 +1,12 @@
+[Interface]
+PrivateKey = {{ wireguard_private_key }}
+Address = {{ wireguard_agent_address }}/24
+
+[Peer]
+PublicKey = {{ wireguard_peer_public_key }}
+PresharedKey = {{ wireguard_preshared_key }}
+AllowedIPs = {{ wireguard_vm_address }}/32
+# VM 現在還沒開機，不知道它 DHCP 會拿到哪個 IP，所以先不填 Endpoint。
+# VM 建好、查到 IP 之後，把下面這行的註解拿掉、換成實際 IP，再 `sudo wg-quick down wg0 && sudo wg-quick up wg0`。
+# Endpoint = <VM的IP>:{{ wireguard_listen_port }}
+PersistentKeepalive = 25
