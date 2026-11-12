@@ -24,4 +24,10 @@ tasks:
   clean:
     desc: '刪除build 產物,強制刪除被gitignore的東西'
     silent: true
-    cmd: git clean -fdX custom/generated
+    cmds:
+      - git clean -fdX custom/generated/iso
+      - git clean -fdX custom/generated/preseed
+      - |
+        if gum confirm --default=false "確定刪除所有keys"; then
+          git clean -fdX custom/generated/keys
+        fi
