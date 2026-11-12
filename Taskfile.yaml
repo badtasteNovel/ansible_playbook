@@ -22,6 +22,6 @@ tasks:
         fi
         echo "$iso_path"
   clean:
-    desc: '刪除build 產物'
+    desc: '刪除build 產物,強制刪除被gitignore的東西'
     silent: true
     cmd: git clean -fdX custom/generated
