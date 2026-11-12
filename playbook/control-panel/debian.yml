@@ -31,8 +31,8 @@
     # 沒有 vm_name 的預設值——這是「這次要建的 VM 叫什麼」這種每次 build 的
     # 輸入參數，不是 ISO/OS 等級的靜態設定，所以不放在 manifest.json 裡，
     # 也不在這裡寫死。custom/scripts/tasks/build-vm.yaml 用
-    # custom/scripts/vm-form.sh（搭配 custom/scripts/vm-form/debian.json
-    # 的欄位定義）現場問使用者，再用 --extra-vars 傳進來。刻意不放預設值：
+    # custom/scripts/vm-form/debian/main.go（用 huh 寫的互動表單，go run
+    # 現場跑）現場問使用者，再用 --extra-vars 傳進來。刻意不放預設值：
     # 之前到處各自寫死 "debian-vm" 字串（這裡、Taskfile、
     # playbook/wsl/add-peer.yml、roles/wireguard_keys/tasks/vm_key.yml……），
     # 哪天要加第二台 VM、只改掉其中幾個地方，就會悄悄兜不起來——還真的抓到
@@ -97,9 +97,9 @@
           - hypervisor_network | length > 0
         fail_msg: >-
           請確認 custom/.env 已填好必要連線資訊，且透過 --extra-vars 傳入
-          vm_name（custom/scripts/vm-form.sh 問出來的值）跟 iso_path（task
-          select-iso 的輸出路徑）——正常透過 task build:debian 跑就不用自己
-          管這兩個，Taskfile 會自動帶
+          vm_name（custom/scripts/vm-form/debian 問出來的值）跟 iso_path
+          （task select-iso 的輸出路徑）——正常透過 task build:debian 跑就
+          不用自己管這兩個，Taskfile 會自動帶
 
     - name: 確保 custom/generated/keys/、custom/generated/preseed/、custom/generated/iso/ 目錄存在
       ansible.builtin.file:
@@ -189,6 +189,16 @@
         # templating。wireguard_peers 這個 fact 本來就看得到（一個 peer 都
         # 沒有時完全不會被 set_fact 設到，是 undefined，不是空字串／false，
         # 所以 wg0.conf.j2 裡用 `wireguard_peers | default([])` 接住就好）。
+
+    - name: 編譯 bootstrap-sudo（charlie SSH 進去後可以自己選擇要不要手動執行的一次性救援腳本，見 custom/scripts/bootstrap-sudo/main.go 開頭說明；go run 不適用——這支要跑在 VM 上，VM 不會有 Go 工具鏈、也不會有這份原始碼，所以這裡要交叉編譯成靜態執行檔，直接塞進 ISO）
+      ansible.builtin.command:
+        cmd: go build -o {{ preseed_output_dir }}/bootstrap-sudo .
+        chdir: "{{ playbook_dir }}/../../custom/scripts/bootstrap-sudo"
+      environment:
+        CGO_ENABLED: "0" # 靜態連結，VM 上不用依賴任何動態函式庫
+        GOOS: linux
+        GOARCH: amd64
+      changed_when: true
 
     - name: 渲染 preseed.cfg
       ansible.builtin.template:

@@ -95,12 +95,26 @@ d-i finish-install/reboot_in_progress note
 ### nofail 保留著是因為 partprobe/udevadm settle 修的是「已知的」那個 race，
 ### 不代表保證未來不會再有其他原因讓這顆碟掛載失敗；這點跟網路（WireGuard）
 ### 完全無關，純粹是本機掛載失敗也會造成一樣的死鎖，值得留一條保險。
+###
+### /cdrom/bootstrap-sudo（control-panel/debian.yml 交叉編譯出來、remaster-iso
+### 塞進 ISO 根目錄）複製進 charlie 家目錄——這是一支「要不要用」完全由使用者
+### 自己決定的一次性救援腳本：charlie 平常完全沒有密碼、只能用 SSH 金鑰登入，
+### 這是刻意的安全設計，這裡不去動它；但如果哪天 WireGuard 或 SSH 本身掛了，
+### 連 ESXi console 都進不去（console 登入需要密碼，charlie 跟 root 都沒有），
+### 到時候除了重建整台 VM 就沒有別的辦法了。bootstrap-sudo 讓使用者趁還能
+### SSH 進去的時候，自己執行一次（sudo ~/bootstrap-sudo），互動設一個密碼、
+### 把 charlie 加進 sudo group，跑完自己刪除自己——預設安全姿態完全不變，
+### 純粹是多留一條「使用者自己選擇要不要開」的退路。只複製檔案、不執行，
+### 執行與否由 charlie 自己決定。
 d-i preseed/late_command string \
   mkdir -p /target/home/{{ vm_user }}/.ssh; \
   echo 'from="{{ wireguard_peer_subnet }}",no-port-forwarding,no-X11-forwarding,no-agent-forwarding {{ ssh_public_key }}' > /target/home/{{ vm_user }}/.ssh/authorized_keys; \
+  cp /cdrom/bootstrap-sudo /target/home/{{ vm_user }}/bootstrap-sudo; \
+  chmod 700 /target/home/{{ vm_user }}/bootstrap-sudo; \
   chmod 700 /target/home/{{ vm_user }}/.ssh; \
   chmod 600 /target/home/{{ vm_user }}/.ssh/authorized_keys; \
   in-target chown -R {{ vm_user }}:{{ vm_user }} /home/{{ vm_user }}/.ssh; \
+  in-target chown {{ vm_user }}:{{ vm_user }} /home/{{ vm_user }}/bootstrap-sudo; \
   sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /target/etc/ssh/sshd_config; \
   sed -i '/^Port /d' /target/etc/ssh/sshd_config; \
   echo 'Port {{ ssh_port }}' >> /target/etc/ssh/sshd_config; \
