@@ -1,3 +1,5 @@
+
+
 # Debian VM 自動化建置（ESXi standalone host）
 ![Build status](https://img.shields.io/badge/ansible-automation-blue)
 ![Target](https://img.shields.io/badge/target-Debian_13_(trixie)-red)
@@ -30,12 +32,21 @@
 - **連線**：`sshpass`（非互動帶密碼 SSH 進 hypervisor）、`jq`（解析 `manifest.json`）
 
 ---
+## 用前環境設置 (Environment Setup)
 
-## 📦 安裝指南 (Installation)
 1. **安裝 go-task**
 ```bash
 sh -c "$(curl -ssL https://taskfile.dev/install.sh)" -- -d -b /tmp && sudo mv /tmp/task /usr/local/bin/task && task --version
 ```
+2. **開啟WinRM服務**(windows)
+```powershell
+ Enable-PSRemoting
+```
+```powershell
+Get-NetFirewallPortFilter | Where-Object { $_.LocalPort -eq 5985 } | Get-NetFirewallRule | Set-NetFirewallRule -RemoteAddress 127.0.0.1
+```
+
+## 📦 安裝指南 (Installation)
 
 2. **Clone 專案**
    ```bash
