@@ -78,7 +78,7 @@
           # Ansible 複製到這個固定路徑，開機時 systemd 會自動重跑一次，確保
           # wsl --shutdown / 重開機之後，例外規則還是排在 blanket 規則前面。
           BLANKET_RULE="to 127.0.0.0/8 lookup local"
-          EXCEPTION_RULE="to 127.0.0.1 ipproto tcp dport 5985 lookup 127"
+          EXCEPTION_RULE="to 127.0.0.1 ipproto tcp dport 22 lookup 127"
 
           RULES=$(ip rule show)
           EXCEPTION_POS=$(printf '%s\n' "$RULES" | grep -n "$EXCEPTION_RULE" | head -1 | cut -d: -f1 || true)

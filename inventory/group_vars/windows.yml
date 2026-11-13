@@ -1,8 +1,7 @@
 ---
-# windows 這個 inventory group（inventory/windows.ini）共用的連線帳密——放
+# windows 這個 inventory group（inventory/windows.ini）共用的連線設定——放
 # 這裡之後，任何要對 windows group 下指令的 playbook，第二個 play 只要
-# `hosts: windows` 就會自動套用，不用每個 playbook 自己再重複寫
-# ansible_user/ansible_password 這兩行。
+# `hosts: windows` 就會自動套用，不用每個 playbook 自己再重複寫這些變數。
 #
 # 放在 inventory/group_vars/（不是 repo 根目錄的 group_vars/）是故意的：
 # Ansible 找 group_vars 只認「跟 inventory 檔案同一層」或「跟 playbook 同一層」
@@ -11,9 +10,25 @@
 #
 # 前提：同一次 ansible-playbook 執行裡，要先有一個 play 在 localhost 上
 # 跑過 custom/scripts/tasks/ansible/load_env.yml，把 custom/.env 讀進
-# dotenv_vars 這個 fact（見該檔案開頭說明，為什麼不能讓 windows
-# 這個 play 自己讀）——沒有這個前提，下面這兩行會因為
+# dotenv_vars 這個 fact（見該檔案開頭說明，為什麼不能讓 windows 這個 play
+# 自己讀）——沒有這個前提，下面 ansible_password 會因為
 # hostvars['localhost'].dotenv_vars 還不存在而範本解析失敗，錯誤訊息會很
-# 明確地指出是這裡出問題。
+# 明確地指出是這裡出問題。playbook_dir 則是不管在哪個檔案裡用都會解析成
+# 「目前真正在跑的那個 playbook」所在目錄，不是這個 group_vars 檔案自己
+# 的位置，實測驗證過。
+#
+# 金鑰 + 密碼兩者都給：ansible_ssh_private_key_file 指向的這把金鑰，公鑰
+# 要先被放進 Windows 的 administrators_authorized_keys 才會被接受（見
+# playbook/wsl/network.yml 裡部署公鑰那幾個 task）——部署公鑰那個 task
+# 本身也需要先連得上 Windows，這是雞生蛋蛋生雞：靠 SSH 用戶端的標準行為
+# 繞過去，同時給金鑰跟密碼，用戶端會先試金鑰，金鑰還沒被授權時認證失敗，
+# 自動退回密碼認證（Windows OpenSSH 預設開著 PasswordAuthentication），
+# 成功之後才有機會執行「把公鑰寫進 administrators_authorized_keys」那個
+# task；一旦公鑰部署成功，之後每次連線金鑰認證就會直接過，不會再用到
+# 密碼這條路，但密碼留著也無妨，不影響已經用金鑰認證成功的連線。
 ansible_user: "{{ hostvars['localhost'].dotenv_vars.WINDOWS_USERNAME }}"
 ansible_password: "{{ hostvars['localhost'].dotenv_vars.WINDOWS_PASSWORD }}"
+# 放在 repo 根目錄的 keys/（不是 custom/generated/keys/）：這把金鑰是連線
+# 身分，不是哪次 build 的產物，刻意放在不會被 task clean 掃到的獨立位置，
+# 跟 inventory/windows.ini 的 known_hosts 放法一致。
+ansible_ssh_private_key_file: "{{ playbook_dir }}/../../keys/ssh/windows_ed25519"
