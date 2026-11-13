@@ -1,64 +1,99 @@
-# k3s用虛擬機器設定檔 
-![Build status](https://img.shields.io/badge/ansible-you_like-blue)
-![Build Status](https://shields.io)
-![Version](https://shields.io)
-![License](https://shields.io)
+# Debian VM 自動化建置（ESXi standalone host）
+![Build status](https://img.shields.io/badge/ansible-automation-blue)
+![Target](https://img.shields.io/badge/target-Debian_13_(trixie)-red)
+![Hypervisor](https://img.shields.io/badge/hypervisor-ESXi_standalone-informational)
 
-> 這裡用一到兩句話簡短描述這個專案在做什麼、解決什麼問題。
+> 用 Ansible + preseed 全自動建置一台 Debian 13 VM，跑在沒有 vCenter 的單台 ESXi host 上；VM 同時是 WireGuard server，`charlie` 這個 sudo 使用者沒有密碼、只能用 SSH 金鑰登入。全程不碰任何 vSphere/ESXi API，只靠 SSH/scp + ESXi 自己的 `vmkfstools`。**Register VM 跟 Power On 是刻意保留的手動步驟**，自動化到此為止。
 
 ---
 
 ## ✨ 功能特色 (Features)
 
-- 🚀 **快速上手**：幾秒鐘即可完成安裝與設定。
-- 🛡️ **安全穩定**：內建完整的例外處理機制。
-- 🎨 **高度客製**：支援多種設定檔格式。
+- 🖥️ **無人值守裝機**：preseed 自動完成分割（LVM，系統碟）、第二顆資料碟的手動切割格式化、帳號、網路設定，裝完就能直接 SSH 進去。
+- 🔑 **SSH host key 預先產生**：裝機前就知道 VM 的 host key fingerprint，裝機時直接蓋掉 `openssh-server` 自動生成的那組，不用 `ssh-keyscan`、不用等開機的 race。
+- 🔒 **`charlie` 永遠無密碼**：鎖住密碼、停用 root 登入，只能用 SSH 金鑰登入；`NOPASSWD` sudo。另外提供 `bootstrap-sudo`——一支塞進 ISO 的一次性救援程式，讓使用者自己決定要不要在 VM 上開一條「設密碼 + 加入 sudo group」的退路，用完自我刪除。
+- 🌐 **WireGuard 是必選項，不是選用功能**：每台 VM 一定是 WireGuard server，`sshd` 鎖定只監聽 WireGuard 位址（`10.105.0.1`），`ufw` 再加一層防護。要把目前這台機器（WSL2 + 原生 Windows 可以一次搞定兩邊）接進隧道，另外跑 `task add-peer`。
+- 🗂️ **匿名 peer 位置**：build 的時候只決定「要留幾個 peer 名額」，金鑰先產生好；之後哪台機器要接進來，用 `task add-peer` 現場認領一個還沒被用掉的名額。
+- 🚫 **刻意不碰 vSphere API**：不裝 `pyvmomi`、不用 `community.vmware`——前身版本在這條路上踩過一連串真實的坑（版本不合、`VmomiJSONEncoder` 壞掉、`cdrom` 參數驗證 bug、hostname 混淆、1GB 檔案的 10 秒上傳 timeout），全部都是依賴那套 collection 本身的症狀。現在只用純 SSH + `scp` + 本地 CLI 工具 `vmkfstools`，Register/Power On 手動做。
+- 🧾 **官方 ISO 完整性驗證**：`task verify-iso` 現場下載 Debian 簽章金鑰、比對 fingerprint、`gpgv` + `sha512sum` 驗證，不在 repo 裡存長期信任材料。
 
 ---
 
 ## 🛠️ 技術棧 (Tech Stack)
 
-* **後端**：Node.js, Express
-* **資料庫**：PostgreSQL
-* **前端**：React, Tailwind CSS
+- **自動化**：Ansible（`ansible-core` + `community.crypto`、`ansible.posix`）
+- **ISO 重新封裝**：`xorriso`（唯讀 `-osirrox` 解包，免 `mount`/`sudo`/loop device）、`isolinux`
+- **互動介面**：`gum`（選單/輸入）、Go + [`huh`](https://github.com/charmbracelet/huh)（`vm-form` 建 VM 表單、`bootstrap-sudo` 救援表單）
+- **VM 層**：ESXi 本地 CLI（`vmkfstools` 建虛擬磁碟）、手寫 `.vmx`
+- **網路**：WireGuard（`wg`/`wg-quick`）、`ufw`、`chrony`
+- **工作流程**：[Task](https://taskfile.dev/)（`Taskfile.yaml` + `custom/scripts/tasks/` 下的命名空間檔）
+- **連線**：`sshpass`（非互動帶密碼 SSH 進 hypervisor）、`jq`（解析 `manifest.json`）
 
 ---
 
 ## 📦 安裝指南 (Installation)
+1. **安裝 go-task**
+```bash
+sh -c "$(curl -ssL https://taskfile.dev/install.sh)" -- -d -b /tmp && sudo mv /tmp/task /usr/local/bin/task && task --version
+```
 
-請先確保您的本機環境已安裝 **Node.js (>= 18.0.0)**。
-
-1. **Clone 專案**
+2. **Clone 專案**
    ```bash
-   git clone https://github.com
-   cd 專案名稱
+   git clone <this-repo>
+   cd ansible
    ```
 
-2. **安裝相依套件**
+3. **安裝所有本機工具**（Ansible、`xorriso`/`isolinux`、`gum`、`jq`、`sshpass`、`wireguard-tools`、Go）
    ```bash
-   npm install
+   task install
    ```
 
-3. **設定環境變數**
-   複製範例設定檔並填入你的參數：
+4. **設定 hypervisor 連線資訊**
    ```bash
-   cp .env.example .env
+   cp custom/.env.example custom/.env
+   # 編輯 custom/.env，填入 HYPERVISOR_HOSTNAME / USERNAME / PASSWORD / DATASTORE / NETWORK
+   ```
+
+5. **放進官方 Debian ISO**
+   ```bash
+   # custom/iso/debian/ 底下放一份 netinst ISO，檔名要對上 custom/iso/manifest.json 裡 debian 的 iso-path
+   task verify-iso   # 可選，但建議先確認是官方未竄改版本
    ```
 
 ---
 
 ## 🚀 使用方式 (Usage)
 
-啟動開發伺服器：
+**建立一台 Debian VM**（互動問 VM 名稱、要留幾個 WireGuard peer 名額）：
 
 ```bash
-npm run dev
+task build:debian
 ```
 
-基本程式碼範例：
-```javascript
-const app = require('./app');
-app.start();
+跑完會把 preseed ISO、`.vmx`、兩顆 `vmkfstools` 建好的虛擬磁碟（系統碟 + 資料碟）都上傳到 `custom/.env` 指定的 datastore，並印出剩下的手動步驟：
+
+```text
+1. 登入 ESXi Host Client，瀏覽到該 .vmx，Register VM
+2. 手動 Power On
+3. preseed 無人值守安裝跑完後，查一下 VM 的 LAN IP（唯一用途：等 task add-peer 要用）
+4. task add-peer —— 把目前這台機器加進 WireGuard、接通隧道
+5. 之後 SSH 固定走 WireGuard 位址 10.105.0.1，不是 LAN IP
+```
+
+**把目前這台機器接進某台 VM 的 WireGuard 隧道**（VM 要先開機、知道它的 LAN IP）：
+
+```bash
+task add-peer
+```
+
+互動選要接哪一台 VM、輸入它的 IP；如果偵測到是 WSL2，會額外幫原生 Windows 也認領一個獨立的 peer，產生一份 WireGuard for Windows 可以直接 import 的 `.conf`。
+
+**其他常用指令**：
+
+```bash
+task select-iso    # 互動選一個已登記的 OS，印出 ISO 路徑
+task verify-iso    # 驗證 ISO 是官方未竄改版本
+task clean         # 清掉 build 產物（keys 會額外二次確認）
 ```
 
 ---
@@ -66,28 +101,38 @@ app.start();
 ## 📂 資料夾結構 (Directory Structure)
 
 ```text
-├── src/            # 主要程式碼
-├── public/         # 靜態資源
-├── tests/          # 單元測試
-├── .env.example    # 環境變數範本
-└── package.json    # 專案相依設定
+├── playbook/
+│   ├── control-panel/debian.yml   # 主要進入點：產生金鑰/preseed/ISO/.vmx，上傳到 datastore
+│   └── wsl/add-peer.yml           # 把控制端（WSL2 + 原生 Windows）接進 VM 的 WireGuard 隧道
+├── roles/
+│   ├── debian_preseed_iso/        # preseed.cfg.j2、debian.vmx.j2（純模板目錄，非正式 Ansible role）
+│   ├── wireguard_keys/            # 金鑰產生/peer 名額產生/認領/標記已認領
+│   ├── wireguard_control_panel/   # VM 端 wg0.conf.j2（server）
+│   └── wireguard_agent/           # 控制端 wg0.conf.j2（peer，含 WSL2 跟原生 Windows 共用）
+├── custom/
+│   ├── iso/                       # 放官方來源 ISO + manifest.json（OS → iso-path/build-path）
+│   ├── generated/                 # build 產物：preseed/、iso/、keys/（gitignored，只留 manifest/.gitkeep）
+│   ├── scripts/
+│   │   ├── remaster-iso/debian.sh     # 重新封裝 ISO（注入檔案、改開機自動選單）
+│   │   ├── verify-iso/debian.sh       # 驗證官方未竄改 ISO
+│   │   ├── vm-form/debian/            # huh 表單：問 VM 名稱
+│   │   ├── bootstrap-sudo/            # 交叉編譯進 ISO 的一次性救援程式
+│   │   └── tasks/                     # Taskfile 的命名空間子檔（install/build/verify-iso）
+│   └── .env.example               # hypervisor 連線資訊範本（.env 本身 gitignored）
+├── inventory/ group_vars/ host_vars/   # Ansible 官方骨架（目前為空，.gitkeep 佔位）
+├── requirements.yml                # ansible-galaxy collections（community.crypto, ansible.posix）
+└── Taskfile.yaml                   # 任務入口，include 上面 custom/scripts/tasks/ 底下的檔案
 ```
 
 ---
 
-## 🤝 如何貢獻 (Contributing)
+## 🤝 開發慣例 (Conventions)
 
-歡迎任何形式的貢獻！如果您有好的建議或發現 Bug：
-
-1. Fork 本專案
-2. 建立您的 Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. 提交您的修改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 開啟一個 Pull Request (PR)
+這是個人機房自動化專案，目前不收外部 PR。commit message 走 Conventional Commits 風格（`feat:`、`fix:`、`docs:` 等前綴 + 中文說明）。細節決策（為什麼不用 vSphere API、為什麼 WireGuard 是強制而非選用、`.vmx`/`vmkfstools` 的已知未驗證假設等）都記錄在 [`CLAUDE.md`](CLAUDE.md)，改動前請先讀過。
 
 ---
 
-## 📄 授權條款 (License)
+## ⚠️ 已知限制
 
-本專案採用 [MIT License](LICENSE) 授權條款。
-
+- `.vmx` 語法與 `vmkfstools` 用法是依官方文件寫的，尚未在真實 ESXi host 上完整驗證過。
+- `charlie` 跟 `root` 都沒有密碼；若 WireGuard 或 SSH 本身掛掉，除了 ESXi console（需要密碼，兩者都沒有）之外沒有救援路徑——這是刻意接受的 tradeoff，細節見 `CLAUDE.md`。`bootstrap-sudo` 是唯一的事後補救手段，且要在還能 SSH 進去時自己執行。
