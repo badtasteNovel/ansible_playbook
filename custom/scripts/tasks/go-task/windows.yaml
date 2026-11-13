@@ -5,5 +5,7 @@ tasks:
   test:
     desc: "測試 WinRM 能不能連上 inventory/windows.ini 裡設定的 Windows 主機（win_ping）"
     silent: true
+    env:
+      OPENSSL_CONF: custom/config/openssl-legacy.cnf # NTLM 要算 MD4，OpenSSL 3.x 預設沒開，見該檔案開頭說明
     cmds:
       - ansible-playbook playbook/wsl/windows-ping.yml -i inventory/windows.ini

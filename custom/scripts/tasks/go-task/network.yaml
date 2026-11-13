@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: '3'
+
+tasks:
+  wsl:
+    desc: "設定這台 WSL2 控制端的網路（修 ip rule 讓 WinRM 連得到本機 Windows、k3s agent 用的防火牆/掛載）+ Windows 端的防火牆規則，見 playbook/wsl/network.yml"
+    silent: true
+    env:
+      OPENSSL_CONF: custom/config/openssl-legacy.cnf # NTLM 要算 MD4，OpenSSL 3.x 預設沒開，見 custom/config/openssl-legacy.cnf 開頭說明
+    cmds:
+      - |
+        set -euo pipefail
+        # --ask-become-pass：這支 playbook 的第一個 play 在 localhost 上動
+        # ufw/mount/systemd（都要 become: true），跟 add-peer 同一個理由，
+        # 本機的 sudo 不是 NOPASSWD 的話沒這個旗標會直接失敗。
+        ansible-playbook playbook/wsl/network.yml \
+          --ask-become-pass \
+          -i inventory/windows.ini

@@ -2,4 +2,5 @@
 collections:
   - name: community.crypto
   - name: ansible.posix
-  - name: ansible.windows # 透過 WinRM 管理 Windows 主機（例如開 Windows Defender Firewall 規則）用，見 inventory/windows.ini
+  - name: ansible.windows # 透過 WinRM 管理 Windows 主機（win_ping、win_shell）用，見 inventory/windows.ini
+  - name: community.windows # win_firewall_rule——ansible.windows 本身沒有防火牆規則模組，見 playbook/wsl/network.yml

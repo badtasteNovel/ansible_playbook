@@ -1,0 +1,382 @@
+---
+# 這台控制端（WSL2，mirrored 網路模式）的網路/防火牆設定——這個專案除了幫
+# debian-vm 建 WireGuard 隧道之外，這台 WSL2 本身最終也要當 /var/projects/
+# lg-laravel 那個 k3s 叢集的 agent 節點，所以這裡要處理的不只是「WSL2 連
+# Windows 本機」這件事，還包含 k3s/cilium 需要的防火牆規則跟掛載設定——
+# 這些內容照抄自 /var/projects/lg-laravel/scripts/tasks/os/os.yaml 的
+# `wsl-agent`（= `agent` + `agent-wsl-network`，`agent` = `dns` + `firewall:agent`
+# + `root-mount-shared`），只扣掉 `dns`（node-local-dns，這個專案目前沒有）。
+# 原本那邊是一堆長長的 bash task，這裡改寫成 Ansible，順便補上原本因為
+# WSL 的 UAC 限制只能印出來、要人工貼的 Windows 防火牆規則——現在透過
+# WinRM 真的連得到 Windows 了，可以直接自動建立，不用再手動貼。
+#
+# ---------- ip rule（WSL2 連 Windows 本機）----------
+#
+# 背景（跟 agent-wsl-network 這個 task 是同一個根因，但症狀/修法不完全
+# 一樣）：WSL2 mirrored 模式下，`ip rule` 有一條 `0: from all to 127.0.0.0/8
+# lookup local`，把所有 127.0.0.0/8 的流量（不分方向）都導去 WSL2 自己的
+# local table——這條規則本身是用來修另一個問題的（WSL2 內部服務互連
+# 127.0.0.1 在 mirrored 模式下常見的 routing 失效），但副作用是讓「WSL2 連
+# Windows 本機」這個方向的 127.0.0.1 流量也被鎖死在 WSL2 自己的 local
+# table，永遠連不到 Windows（連到 Windows 的真正橋接通道是 priority 1 的
+# `lookup 127`，但 priority 0 的 blanket 規則永遠先比對到，table 127 根本
+# 沒機會被查）。實測（curl/nc 連 127.0.0.1:5985 從 WSL2 這端立刻 connection
+# refused、Windows 本機自己連完全沒問題）確認是這個根因，不是 WinRM 設定、
+# 不是 Windows Firewall per-app 規則的問題。
+#
+# 解法：在 blanket 規則之前，插一條更精確的例外規則，只把「目的地剛好是
+# 127.0.0.1、剛好是 TCP、剛好是 port 5985」這個三元組改查 table 127（連去
+# Windows），其他所有 127.0.0.0/8 流量完全不受影響——跟 lg-laravel 那邊真正
+# 在用的 ip rule 完全不衝突，各自管各自的範圍。`ip rule` 在同一個 priority
+# 下是按插入順序比對，這個版本的 `ip` 不吃負數 priority，沒辦法插隊，所以
+# 用「刪掉 blanket 規則 → 先插例外規則 → 再插回 blanket 規則」的順序來保證
+# 例外規則排在前面。這個修正不會持久化（reboot/wsl --shutdown 會還原），
+# 所以額外裝一支開機自動套用的 systemd service——跟 lg-laravel 的
+# wsl-agent-network.service 是獨立的兩支，不互相依賴、不互相覆蓋。
+#
+# ---------- firewall:agent（cilium VXLAN/health + WireGuard wgx）----------
+#
+# 完全照抄 lg-laravel 的 firewall:agent：VXLAN（cilium 的 node-to-node
+# overlay，UDP 8472）、cilium health check（TCP 4240）要同時放行物理 LAN
+# （192.168.0.0/24）跟 wgx 的 WireGuard 子網（10.100.0.0/24）兩個來源——
+# 流量可能直接走物理網卡，也可能解包自 wgx 隧道，兩種都要開；WireGuard
+# wgx 自己的監聽埠（UDP 51820）只開放物理 LAN，因為 handshake 封包本來
+# 就是從實體網路打進來的。這些子網是 lg-laravel 自己的（10.100.0.0/24
+# 是它的 wgx 子網，跟這個專案自己的 WireGuard 子網 10.105.0.0/24 是完全
+# 不同的兩個隧道，共用同一台 WSL2 當 peer 而已）。
+#
+# ---------- root-mount-shared ----------
+#
+# 完全照抄：把 / 掛載改成 shared propagation，containerd 建立
+# mountPropagation: HostToContainer 的 hostPath 掛載時才不會被拒絕；同樣
+# 裝成開機自動套用的 systemd service，排在 k3s/k3s-agent 之前。
+
+- name: 這台 WSL2 控制端的網路/防火牆設定（ip rule 修復 + k3s agent 用的防火牆/掛載）
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    ip_rule_fix_script_path: /usr/local/sbin/ansible-wsl-network-fix.sh
+    ip_rule_fix_service_path: /etc/systemd/system/ansible-wsl-network-fix.service
+    root_mount_shared_script_path: /usr/local/sbin/ansible-root-mount-shared.sh
+    root_mount_shared_service_path: /etc/systemd/system/ansible-root-mount-shared.service
+
+  tasks:
+    # ---------- ip rule ----------
+
+    - name: 寫入 ip rule 修復腳本（固定路徑，systemd unit 跟手動執行都呼叫這支，邏輯只寫一次）
+      become: true
+      ansible.builtin.copy:
+        dest: "{{ ip_rule_fix_script_path }}"
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          # 跟 playbook/wsl/network.yml 開頭的說明是同一套邏輯，這支腳本被
+          # Ansible 複製到這個固定路徑，開機時 systemd 會自動重跑一次，確保
+          # wsl --shutdown / 重開機之後，例外規則還是排在 blanket 規則前面。
+          BLANKET_RULE="to 127.0.0.0/8 lookup local"
+          EXCEPTION_RULE="to 127.0.0.1 ipproto tcp dport 5985 lookup 127"
+
+          RULES=$(ip rule show)
+          EXCEPTION_POS=$(printf '%s\n' "$RULES" | grep -n "$EXCEPTION_RULE" | head -1 | cut -d: -f1 || true)
+          BLANKET_POS=$(printf '%s\n' "$RULES" | grep -n "$BLANKET_RULE" | head -1 | cut -d: -f1 || true)
+
+          if [ -n "$EXCEPTION_POS" ] && [ -n "$BLANKET_POS" ] && [ "$EXCEPTION_POS" -lt "$BLANKET_POS" ]; then
+            echo "ℹ️ ip rule 已經是目標狀態（WinRM 例外規則排在 blanket 規則之前），跳過"
+            exit 0
+          fi
+
+          # 不管目前是哪種狀態（blanket 不存在、例外規則不存在、順序顛倒），
+          # 統一用「先清掉兩條、再照正確順序插回去」來處理，比針對每種狀態
+          # 寫對應的修法簡單、也比較不容易漏掉邊界情況。
+          ip rule del pref 0 $BLANKET_RULE 2>/dev/null || true
+          ip rule del pref 0 $EXCEPTION_RULE 2>/dev/null || true
+          ip rule add pref 0 $EXCEPTION_RULE
+          ip rule add pref 0 $BLANKET_RULE
+          echo "✅ 已修正 ip rule 順序：WinRM(5985) 例外規則排在 127.0.0.0/8 → local 之前"
+
+    - name: 立刻執行一次 ip rule 修復腳本
+      become: true
+      ansible.builtin.command: "{{ ip_rule_fix_script_path }}"
+      register: ip_rule_fix_result
+      changed_when: "'✅' in ip_rule_fix_result.stdout"
+
+    - name: 印出 ip rule 修復結果
+      ansible.builtin.debug:
+        msg: "{{ ip_rule_fix_result.stdout_lines }}"
+
+    - name: 寫入 ip rule 修復的開機自動套用 systemd service
+      become: true
+      ansible.builtin.copy:
+        dest: "{{ ip_rule_fix_service_path }}"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=修正 WSL2 mirrored networking 的 ip rule 順序，讓這個專案的 WinRM(5985) 連線能跨到本機 Windows（見 playbook/wsl/network.yml，跟 lg-laravel 的 wsl-agent-network.service 是獨立的兩支）
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart={{ ip_rule_fix_script_path }}
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: 啟用 ip rule 修復的開機自動套用
+      become: true
+      ansible.builtin.systemd:
+        daemon_reload: true
+        name: ansible-wsl-network-fix.service
+        enabled: true
+
+    # ---------- ephemeral port range（mirrored 模式單向繼承 Windows 的設定，純檢查） ----------
+    #
+    # mirrored 模式下 WSL2 單向繼承 Windows 的 ephemeral port range。如果這個
+    # range 跟 Cilium NodePort（30000-32767）重疊，WSL2 這邊發出去的連線有機率
+    # 挑到落在那段的來源 port，導致 cilium-agent CrashLoopBackOff。
+    #
+    # 這裡只檢查、不自動用 sysctl 改——之前覺得「go-task 測不出來，可能是
+    # 工具限制不是技術限制」想自動套用試試看，實測驗證過這個判斷是錯的：
+    # 跑 task network:wsl 之後 DNS 真的斷過（127.0.0.53 連不到，要先繞道
+    # 1.1.1.1 才能用），根因就是這裡——sysctl 硬改 ip_local_port_range 的
+    # 那一刻，就讓 Windows/WSL2 當下已經建立的連接埠對應關係脫鉤了，跟用
+    # 什麼工具執行無關。改回只檢查、印警告，不自動改。
+    - name: 讀取 WSL2 目前的 ephemeral port range
+      ansible.builtin.command: cat /proc/sys/net/ipv4/ip_local_port_range
+      register: wsl_ephemeral_range
+      changed_when: false
+
+    - name: 警告 ephemeral port range 跟 Cilium NodePort range 可能衝突（純檢查，不自動修——見上面說明）
+      ansible.builtin.debug:
+        msg: >-
+          目前 WSL ephemeral port range：{{ wsl_ephemeral_range.stdout | replace('\t', '-') }}
+          （需完全 >32767 才不會跟 Cilium NodePort 衝突；這個值是 mirrored
+          模式每次開機從 Windows 繼承的，不建議用 sysctl 強改——已經實測過
+          會讓 Windows/WSL2 的連接埠對應脫鉤、導致連線卡住。若真的持續衝突，
+          要修請從 Windows 端的 dynamic port range 起點處理，見下面
+          hosts: windows 的 play）
+      when: (wsl_ephemeral_range.stdout.split() | first | int) <= 32767
+
+    # ---------- firewall:agent 的 Linux/ufw 分支：不搬 ----------
+    #
+    # lg-laravel 原文在 WSL2 這端也用 ufw 開 VXLAN/health/WireGuard wgx 這幾個
+    # port。但 WSL2 自己的 kernel 預設沒有任何防火牆規則（沒裝 ufw/iptables
+    # 的話就是全開、沒有 default-deny 政策）——mirrored 模式下，真正擋在外面
+    # 的關卡是 Windows 自己的防火牆（封包要先經過 Windows Defender Firewall
+    # 才有機會進到 WSL2 的網路命名空間）。也就是說，這幾個 port 現在狀態下
+    # 根本沒有東西在擋，裝 ufw 反而是從「目前全開」變成「限制只准特定來源」，
+    # 是新增一層限制，不是打通原本被擋住的東西——跟下面 hosts: windows 那三條
+    # 規則的性質完全不同（Windows 端是真的有防火牆在擋，需要明確開放）。
+    # 所以這裡不裝、不設 ufw，只靠 Windows 端的防火牆規則把關。
+
+    # ---------- root-mount-shared ----------
+
+    - name: 寫入 root mount shared 腳本
+      become: true
+      ansible.builtin.copy:
+        dest: "{{ root_mount_shared_script_path }}"
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          # containerd 建立 hostPath + mountPropagation: HostToContainer/Bidirectional
+          # 的掛載時，會要求來源路徑（這裡是 /）本身的 propagation 是 shared 或 slave，
+          # 預設常是 private（尤其 WSL2），會直接被拒絕，容器整個起不來。
+          PROPAGATION=$(findmnt --noheadings --output PROPAGATION / | tail -n1)
+          if [ "$PROPAGATION" = "shared" ] || [ "$PROPAGATION" = "slave" ]; then
+            echo "ℹ️ / 掛載已經是 ${PROPAGATION} propagation，跳過"
+          else
+            mount --make-rshared /
+            echo "✅ 已將 / 掛載設為 shared propagation（原本是 ${PROPAGATION}）"
+          fi
+
+    - name: 立刻執行一次 root mount shared 腳本
+      become: true
+      ansible.builtin.command: "{{ root_mount_shared_script_path }}"
+      register: root_mount_shared_result
+      changed_when: "'✅' in root_mount_shared_result.stdout"
+
+    - name: 印出 root mount shared 結果
+      ansible.builtin.debug:
+        msg: "{{ root_mount_shared_result.stdout_lines }}"
+
+    - name: 寫入 root mount shared 的開機自動套用 systemd service（排在 k3s/k3s-agent 之前）
+      become: true
+      ansible.builtin.copy:
+        dest: "{{ root_mount_shared_service_path }}"
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=把 / 掛載改成 shared propagation，讓 node-exporter 等需要 mountPropagation 的 hostPath 掛載不會被 containerd 拒絕
+          Before=k3s.service k3s-agent.service
+          DefaultDependencies=no
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart={{ root_mount_shared_script_path }}
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: 啟用 root mount shared 的開機自動套用
+      become: true
+      ansible.builtin.systemd:
+        daemon_reload: true
+        name: ansible-root-mount-shared.service
+        enabled: true
+
+    # ---------- 連線測試（確認 ip rule 修復真的讓 WinRM 連得到）----------
+    #
+    # 這一段跟 playbook/wsl/windows-ping.yml 的內容重複——Ansible 的 play
+    # 沒辦法「呼叫」另一個 playbook 當子程序，hosts: 只能寫在 play 層級，
+    # 要在這支 playbook 裡接著做 Windows 側的設定、又要先確認連線通了才能做，
+    # 就只能把連線測試的邏輯再寫一次，不是忘記重用 windows-ping.yml。
+
+    - name: 載入 custom/.env（windows group 的連線帳密要靠這個先備好，見 custom/scripts/tasks/ansible/load_env.yml 開頭說明）
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/load_env.yml"
+      vars:
+        dotenv_path: "{{ playbook_dir }}/../../custom/.env"
+
+- name: 確認 ip rule 修復後，WinRM 連線真的通了
+  hosts: windows
+  gather_facts: false
+  tasks:
+    # 前提：Windows 要先手動把 127.0.0.1 加進 NTLM loopback check 白名單
+    # （HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0\
+    # BackConnectionHostNames），否則這個 play 連第一個 task 都連不上去。
+    # 這一步沒辦法自動化：修這個設定本身要透過 WinRM 連線才能用 Ansible
+    # 做，但 WinRM 連線卡住的正是這個設定沒加——雞生蛋蛋生雞，Ansible 自己
+    # 打不破這個循環，手動跑一次是唯一辦法（PowerShell 系統管理員權限）：
+    #   New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
+    #     -Name "BackConnectionHostNames" -Value "127.0.0.1" -PropertyType MultiString -Force
+    #   Restart-Service WinRM
+    - name: win_ping
+      ansible.windows.win_ping:
+
+# ---------- Windows 端設定（照抄 firewall:agent 的 Windows 分支，原本因為 WSL
+# 的 UAC 限制只能印指令要人工貼，現在走 WinRM 直接自動建立）----------
+
+- name: Windows 端的防火牆規則（cilium VXLAN/health + WireGuard wgx + Hyper-V VM 網路）
+  hosts: windows
+  gather_facts: false
+  vars:
+    lan_subnet: "192.168.0.0/24"
+    wgx_subnet: "10.105.0.0/24"
+  tasks:
+    - name: 開放 Cilium VXLAN（UDP 8472）
+      community.windows.win_firewall_rule:
+        name: "Cilium VXLAN"
+        direction: in
+        action: allow
+        protocol: udp
+        localport: 8472
+        remoteip: "{{ lan_subnet }},{{ wgx_subnet }}"
+        state: present
+        enabled: true
+
+    - name: 開放 Cilium Health（TCP 4240）
+      community.windows.win_firewall_rule:
+        name: "Cilium Health"
+        direction: in
+        action: allow
+        protocol: tcp
+        localport: 4240
+        remoteip: "{{ lan_subnet }},{{ wgx_subnet }}"
+        state: present
+        enabled: true
+
+    - name: 開放 WireGuard wgx（UDP 51820）
+      community.windows.win_firewall_rule:
+        name: "WireGuard wgx"
+        direction: in
+        action: allow
+        protocol: udp
+        localport: 51820
+        remoteip: "{{ lan_subnet }}"
+        state: present
+        enabled: true
+
+    # ansible.windows.win_firewall_rule 沒有對應 Set-NetFirewallHyperVVMSetting
+    # 的專用模組，直接用 win_shell 呼叫這個 cmdlet 本身。
+    - name: 開啟 Hyper-V VM 網路層的預設 inbound 允許（WSL2 mirrored 模式底層還是走 Hyper-V 虛擬網路，這一層沒開，上面的防火牆規則都不會真的生效）
+      ansible.windows.win_shell: >-
+        Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow -Enabled True
+      changed_when: true
+
+    # ---------- ephemeral port range 排除（Cilium NodePort range）----------
+    #
+    # lg-laravel 原文這段本來因為 WSL 的 UAC 限制只能檢查、印出指令要人工貼
+    # （netsh int ipv4 show/add excludedportrange 需要系統管理員權限，從 WSL
+    # 用 powershell.exe interop 觸發不出提權視窗）。現在走 WinRM 直接是以
+    # 系統管理員帳號的網路登入執行，不會卡在互動式 UAC，所以這裡直接自動
+    # 檢查 + 套用，不用再印指令請人工執行。
+    - name: 檢查 Windows 是否已排除 30000-32767（Cilium NodePort range），沒有就補上（tcp + udp 都要排除）
+      ansible.windows.win_shell: |
+        $excluded = netsh int ipv4 show excludedportrange protocol=tcp
+        $covered = $false
+        foreach ($line in $excluded) {
+          if ($line -match '^\s*(\d+)\s+(\d+)') {
+            $start = [int]$matches[1]
+            $end = [int]$matches[2]
+            if ($start -le 30000 -and $end -ge 32767) {
+              $covered = $true
+            }
+          }
+        }
+        if ($covered) {
+          Write-Output "ALREADY_EXCLUDED"
+        } else {
+          netsh int ipv4 add excludedportrange protocol=tcp startport=30000 numberofports=2768 store=persistent
+          netsh int ipv4 add excludedportrange protocol=udp startport=30000 numberofports=2768 store=persistent
+          Write-Output "EXCLUDED_NOW"
+        }
+      register: port_exclude_result
+      changed_when: "'EXCLUDED_NOW' in port_exclude_result.stdout"
+
+    - name: 印出排除結果
+      ansible.builtin.debug:
+        msg: "{{ port_exclude_result.stdout_lines }}"
+
+    # ---------- dynamic port range 起點（另一種變體，同一個根因）----------
+    #
+    # 跟上面排除 30000-32767 是兩回事：如果 Windows TCP dynamic port range
+    # 的起點被設得很低（<32768），mirrored 模式每次開機切給 WSL 的 ephemeral
+    # block 有機率整段落在 NodePort 下方（lg-laravel 原文實測見過
+    # 9130-13225），排除 excludedportrange 救不到這種情況，要把起點直接拉
+    # 回正常值。
+    #
+    # 這裡刻意只檢查、不自動套用 `netsh int ipv4 set dynamicport`——跟上面
+    # WSL 側 sysctl 改 ephemeral port range 是同一類風險：改連接埠範圍配置
+    # 這個動作本身，不管從 Windows 端還是 WSL 端做，都會讓兩邊已經建立的
+    # 連接埠對應關係脫鉤，原文自己也寫「執行後要 wsl --shutdown 重開才會生
+    # 效」——承認了「改完、沒馬上重開」這個中間狀態是不正常的。這不是 UAC/
+    # 工具限制（跟上面排除 excludedportrange 不一樣），是操作本身的技術後果，
+    # 之前把這個自動化是判斷錯誤，已經實測驗證過（這次 network:wsl 跑完
+    # DNS 真的斷過），改回只檢查、印出來，要不要改、要不要配合 wsl --shutdown
+    # 重開，由你自己決定。
+    - name: 檢查 Windows dynamic port range 起點是否低於 49152（只檢查，不自動套用——見上面說明）
+      ansible.windows.win_shell: |
+        $current = netsh int ipv4 show dynamicport tcp
+        $startLine = $current | Select-String 'Start Port\s*:\s*(\d+)'
+        $start = [int]$startLine.Matches[0].Groups[1].Value
+        if ($start -ge 49152) {
+          Write-Output "OK (start=$start)"
+        } else {
+          Write-Output "LOW (start=$start)"
+        }
+      register: dynamicport_result
+      changed_when: false
+
+    - name: 印出 dynamic port range 檢查結果
+      ansible.builtin.debug:
+        msg: >-
+          {{ dynamicport_result.stdout_lines }}
+          {{ '——起點偏低，有機率跟 Cilium NodePort range 重疊。要修的話，在 Windows 系統管理員 PowerShell 執行：netsh int ipv4 set dynamicport tcp start=49152 num=16384，然後 wsl --shutdown 重開（不配合重開機會讓 Windows/WSL2 的連接埠對應脫鉤，導致連線卡住——這個專案已經實測過同一類問題，不要在沒有馬上重開機的情況下套用）。' if 'LOW' in dynamicport_result.stdout else '' }}

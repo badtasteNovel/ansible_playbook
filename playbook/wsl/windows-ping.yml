@@ -10,7 +10,7 @@
 # 變數用。
 #
 # 這整套刻意不靠 OS 環境變數（不用 lookup('env', ...)，Taskfile 那邊也不用
-# `set -a; source custom/.env`）——見 custom/scripts/tasks/ansible/load_env/main.yml
+# `set -a; source custom/.env`）——見 custom/scripts/tasks/ansible/load_env.yml
 # 開頭的說明。
 #
 # 以後其他要對 windows group 下指令的 playbook，都要照這個結構：第一個 play
@@ -27,7 +27,7 @@
   tasks:
     - name: 載入 custom/.env
       ansible.builtin.include_tasks:
-        file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/load_env/main.yml"
+        file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/load_env.yml"
       vars:
         dotenv_path: "{{ playbook_dir }}/../../custom/.env"
 
@@ -35,5 +35,14 @@
   hosts: windows
   gather_facts: false
   tasks:
+    # 前提：Windows 要先手動把 127.0.0.1 加進 NTLM loopback check 白名單
+    # （HKLM\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0\
+    # BackConnectionHostNames），否則這個 play 連第一個 task 都連不上去。
+    # 這一步沒辦法自動化：修這個設定本身要透過 WinRM 連線才能用 Ansible
+    # 做，但 WinRM 連線卡住的正是這個設定沒加——雞生蛋蛋生雞，Ansible 自己
+    # 打不破這個循環，手動跑一次是唯一辦法（PowerShell 系統管理員權限）：
+    #   New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
+    #     -Name "BackConnectionHostNames" -Value "127.0.0.1" -PropertyType MultiString -Force
+    #   Restart-Service WinRM
     - name: win_ping
       ansible.windows.win_ping:

@@ -1,0 +1,20 @@
+# 讓 OpenSSL 3.x 額外啟用 legacy provider（MD4 等舊演算法在 default
+# provider 裡被拿掉了，NTLM 認證的底層計算需要 MD4，沒有這個設定 pywinrm/
+# requests-ntlm 在算 NTLM hash 時會直接丟 ValueError: unsupported hash
+# type md4，連帳密都還沒送到 Windows 那邊就先炸掉）。只在跑 WinRM 相關的
+# Ansible 指令時透過 OPENSSL_CONF 環境變數套用這個設定檔，不動系統全域的
+# /etc/ssl/openssl.cnf，避免影響這台機器上其他用到 OpenSSL 的東西。
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = provider_sect
+
+[provider_sect]
+default = default_sect
+legacy = legacy_sect
+
+[default_sect]
+activate = 1
+
+[legacy_sect]
+activate = 1
