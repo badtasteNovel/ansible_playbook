@@ -50,7 +50,10 @@ netstat -ano | Select-String "5985"
 ```
 3. **確保 127.0.0.1 在 windows 的 NTLM loopback check 白名單中**
 ```powershell
-New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" -Name "BackConnectionHostNames" -Value "127.0.0.1" -PropertyType MultiString -Force
+$p = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0"
+$old = (Get-ItemProperty $p -Name BackConnectionHostNames -ErrorAction SilentlyContinue).BackConnectionHostNames
+$new = @($old) + "127.0.0.1" | Where-Object { $_ } | Select-Object -Unique
+Set-ItemProperty -Path $p -Name BackConnectionHostNames -Value $new -Type MultiString 
 ```
 **檢查是否已添加**
 ```powershell
