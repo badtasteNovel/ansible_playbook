@@ -52,6 +52,10 @@ netstat -ano | Select-String "5985"
 ```powershell
 New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" -Name "BackConnectionHostNames" -Value "127.0.0.1" -PropertyType MultiString -Force
 ```
+**檢查是否已添加**
+```powershell
+Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" -Name "BackConnectionHostNames" | Select-Object -ExpandProperty BackConnectionHostNames
+```
 ```powershell
 Restart-Service WinRM
 ```
