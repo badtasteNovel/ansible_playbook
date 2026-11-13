@@ -48,27 +48,34 @@ Get-NetFirewallPortFilter | Where-Object { $_.LocalPort -eq 5985 } | Get-NetFire
 ```powershell
 netstat -ano | Select-String "5985"
 ```
+3. **確保 127.0.0.1 在 windows 的 NTLM loopback check 白名單中**
+```powershell
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" -Name "BackConnectionHostNames" -Value "127.0.0.1" -PropertyType MultiString -Force
+```
+```powershell
+Restart-Service WinRM
+```
 
 ## 📦 安裝指南 (Installation)
 
-2. **Clone 專案**
+1. **Clone 專案**
    ```bash
    git clone <this-repo>
    cd ansible
    ```
 
-3. **安裝所有本機工具**（Ansible、`xorriso`/`isolinux`、`gum`、`jq`、`sshpass`、`wireguard-tools`、Go）
+2. **安裝所有本機工具**（Ansible、`xorriso`/`isolinux`、`gum`、`jq`、`sshpass`、`wireguard-tools`、Go）
    ```bash
    task install
    ```
 
-4. **設定 hypervisor 連線資訊**
+3. **設定 hypervisor 連線資訊**
    ```bash
    cp custom/.env.example custom/.env
    # 編輯 custom/.env，填入 HYPERVISOR_HOSTNAME / USERNAME / PASSWORD / DATASTORE / NETWORK
    ```
 
-5. **放進官方 Debian ISO**
+4. **放進官方 Debian ISO**
    ```bash
    # custom/iso/debian/ 底下放一份 netinst ISO，檔名要對上 custom/iso/manifest.json 裡 debian 的 iso-path
    task verify-iso   # 可選，但建議先確認是官方未竄改版本
