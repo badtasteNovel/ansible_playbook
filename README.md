@@ -56,18 +56,24 @@ Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 啟動服務，並設成開機自動啟動
 ```powershell
 Start-Service sshd
+```
+```powershell
 Set-Service -Name sshd -StartupType 'Automatic'
 ```
 確認防火牆規則有沒有自動建立（安裝時通常會自動加一條）
+
 ```powershell
-Get-NetFirewallRule -Name *ssh* | Set-NetFirewallAddressFilter -RemoteAddress 127.0.0.1
+Get-NetFirewallRule -Name *ssh* | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress 127.0.0.1
 ```
 
 如果第 3 步查不到規則(沒有自動建立),補上:
 ```powershell
 New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -RemoteAddress 127.0.0.1
 ```
-
+4. 查詢 127.0.0.1 是否已成為限制ip
+```powershell
+Get-NetFirewallRule -Name *ssh* | Get-NetFirewallAddressFilter
+```
 ## 📦 安裝指南 (Installation)
 
 1. **Clone 專案**
