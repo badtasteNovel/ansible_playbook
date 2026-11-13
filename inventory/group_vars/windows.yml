@@ -1,0 +1,19 @@
+---
+# windows 這個 inventory group（inventory/windows.ini）共用的連線帳密——放
+# 這裡之後，任何要對 windows group 下指令的 playbook，第二個 play 只要
+# `hosts: windows` 就會自動套用，不用每個 playbook 自己再重複寫
+# ansible_user/ansible_password 這兩行。
+#
+# 放在 inventory/group_vars/（不是 repo 根目錄的 group_vars/）是故意的：
+# Ansible 找 group_vars 只認「跟 inventory 檔案同一層」或「跟 playbook 同一層」
+# 這兩個位置，不是 repo 根目錄——根目錄的 group_vars/ 是給官方骨架用的，
+# inventory/windows.ini 不在那一層，放根目錄不會被套用，實測驗證過。
+#
+# 前提：同一次 ansible-playbook 執行裡，要先有一個 play 在 localhost 上
+# 跑過 custom/scripts/tasks/ansible/load_env/main.yml，把 custom/.env 讀進
+# dotenv_vars 這個 fact（見該檔案開頭說明，為什麼不能讓 windows
+# 這個 play 自己讀）——沒有這個前提，下面這兩行會因為
+# hostvars['localhost'].dotenv_vars 還不存在而範本解析失敗，錯誤訊息會很
+# 明確地指出是這裡出問題。
+ansible_user: "{{ hostvars['localhost'].dotenv_vars.WINDOWS_USERNAME }}"
+ansible_password: "{{ hostvars['localhost'].dotenv_vars.WINDOWS_PASSWORD }}"

@@ -30,11 +30,11 @@
   vars:
     # 沒有 vm_name 的預設值——這是「這次要建的 VM 叫什麼」這種每次 build 的
     # 輸入參數，不是 ISO/OS 等級的靜態設定，所以不放在 manifest.json 裡，
-    # 也不在這裡寫死。custom/scripts/tasks/build-vm.yaml 用
+    # 也不在這裡寫死。custom/scripts/tasks/go-task/build-vm.yaml 用
     # custom/scripts/vm-form/debian/main.go（用 huh 寫的互動表單，go run
     # 現場跑）現場問使用者，再用 --extra-vars 傳進來。刻意不放預設值：
     # 之前到處各自寫死 "debian-vm" 字串（這裡、Taskfile、
-    # playbook/wsl/add-peer.yml、roles/wireguard_keys/tasks/vm_key.yml……），
+    # playbook/wsl/add-peer.yml、custom/scripts/tasks/ansible/wireguard_keys/vm_key.yml……），
     # 哪天要加第二台 VM、只改掉其中幾個地方，就會悄悄兜不起來——還真的抓到
     # 好幾處漏改的。
     vm_user: charlie
@@ -48,11 +48,12 @@
     wireguard_vm_address: "10.105.0.1"
     wireguard_peer_subnet: "10.105.0.0/24" # charlie 的 authorized_keys 用這個限制 from=，只接受從任一合法 WireGuard peer 連進來
     wireguard_listen_port: 51820
+    lan_subnet: "192.168.0.0/24" # 實體 LAN 網段（ESXi host、控制端本機都在這個網段，見 custom/.env.example 的 HYPERVISOR_HOSTNAME=192.168.1.10）——ufw 拿這個限制 WireGuard 監聽埠本身只接受內網來源的 handshake，不開放給整個網際網路
     peer_slot_count: 0 # 要新增幾個匿名 peer 位置，由 build:debian 的 gum input 透過 --extra-vars 決定
 
     keys_dir: "{{ playbook_dir }}/../../custom/generated/keys"
     wireguard_keys_base_dir: "{{ keys_dir }}/wireguard-keys" # custom/generated/keys/ 底下按用途分的子資料夾之一
-    wireguard_peers_dir: "{{ wireguard_keys_base_dir }}/wireguard_peers" # 每個 peer 一個子目錄，見 roles/wireguard_keys/tasks/generate_one_peer_slot.yml、claim_peer.yml
+    wireguard_peers_dir: "{{ wireguard_keys_base_dir }}/wireguard_peers" # 每個 peer 一個子目錄，見 custom/scripts/tasks/ansible/wireguard_keys/generate_one_peer_slot.yml、claim_peer.yml
     ssh_key_path: "{{ keys_dir }}/ssh/{{ vm_user }}_ed25519" # VM 上 charlie 登入用的 client 金鑰
     ssh_host_key_path: "{{ keys_dir }}/known-hosts/{{ vm_name }}/ed_25519" # VM 自己的 host key——放在 known-hosts/ 底下，因為這把金鑰的用途就是 known_hosts 驗證
     hypervisor_known_hosts_path: "{{ keys_dir }}/known-hosts/hypervisor_known_hosts"
@@ -142,13 +143,13 @@
 
     - name: 確保 VM 自己的 WireGuard 金鑰已經產生（只有 VM 自己的身分，跟 peer 金鑰完全分開）
       ansible.builtin.include_tasks:
-        file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/vm_key.yml"
+        file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/wireguard_keys/vm_key.yml"
       vars:
         wireguard_keys_dir: "{{ wireguard_keys_base_dir }}"
 
-    - name: 新增 {{ peer_slot_count }} 個匿名的 WireGuard peer 位置（還沒被任何機器認領，數量由 custom/scripts/tasks/build-vm.yaml 的 gum input 決定）
+    - name: 新增 {{ peer_slot_count }} 個匿名的 WireGuard peer 位置（還沒被任何機器認領，數量由 custom/scripts/tasks/go-task/build-vm.yaml 的 gum input 決定）
       ansible.builtin.include_tasks:
-        file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/generate_one_peer_slot.yml"
+        file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/wireguard_keys/generate_one_peer_slot.yml"
       loop: "{{ range(0, peer_slot_count | int) | list }}"
       loop_control:
         label: "第 {{ item + 1 }} 個"
@@ -179,7 +180,7 @@
 
     - name: 渲染 VM 的 wg0.conf，放進 ISO 注入資料夾（Peer 區塊數量跟著 wireguard_peers 走，可能是 0 個）
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../../roles/wireguard_control_panel/templates/wg0.conf.j2"
+        src: "{{ playbook_dir }}/../../custom/config/wireguard_control_panel/wg0.conf.j2"
         dest: "{{ preseed_output_dir }}/wg0.conf"
         mode: "0600"
       vars:
@@ -202,7 +203,7 @@
 
     - name: 渲染 preseed.cfg
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../../roles/debian_preseed_iso/templates/preseed.cfg.j2"
+        src: "{{ playbook_dir }}/../../custom/config/debian_preseed_iso/preseed.cfg.j2"
         dest: "{{ preseed_output_dir }}/preseed.cfg"
         mode: "0600"
       vars:
@@ -222,7 +223,7 @@
 
     - name: 渲染 .vmx
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../../roles/debian_preseed_iso/templates/debian.vmx.j2"
+        src: "{{ playbook_dir }}/../../custom/config/debian_preseed_iso/debian.vmx.j2"
         dest: "{{ vmx_output_path }}"
         mode: "0600"
 

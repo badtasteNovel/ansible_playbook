@@ -28,7 +28,7 @@
 - **互動介面**：`gum`（選單/輸入）、Go + [`huh`](https://github.com/charmbracelet/huh)（`vm-form` 建 VM 表單、`bootstrap-sudo` 救援表單）
 - **VM 層**：ESXi 本地 CLI（`vmkfstools` 建虛擬磁碟）、手寫 `.vmx`
 - **網路**：WireGuard（`wg`/`wg-quick`）、`ufw`、`chrony`
-- **工作流程**：[Task](https://taskfile.dev/)（`Taskfile.yaml` + `custom/scripts/tasks/` 下的命名空間檔）
+- **工作流程**：[Task](https://taskfile.dev/)（`Taskfile.yaml` + `custom/scripts/tasks/go-task/` 下的命名空間檔）
 - **連線**：`sshpass`（非互動帶密碼 SSH 進 hypervisor）、`jq`（解析 `manifest.json`）
 
 ---
@@ -117,25 +117,35 @@ task clean         # 清掉 build 產物（keys 會額外二次確認）
 ```text
 ├── playbook/
 │   ├── control-panel/debian.yml   # 主要進入點：產生金鑰/preseed/ISO/.vmx，上傳到 datastore
-│   └── wsl/add-peer.yml           # 把控制端（WSL2 + 原生 Windows）接進 VM 的 WireGuard 隧道
-├── roles/
-│   ├── debian_preseed_iso/        # preseed.cfg.j2、debian.vmx.j2（純模板目錄，非正式 Ansible role）
-│   ├── wireguard_keys/            # 金鑰產生/peer 名額產生/認領/標記已認領
-│   ├── wireguard_control_panel/   # VM 端 wg0.conf.j2（server）
-│   └── wireguard_agent/           # 控制端 wg0.conf.j2（peer，含 WSL2 跟原生 Windows 共用）
+│   └── wsl/
+│       ├── add-peer.yml           # 把控制端（WSL2 + 原生 Windows）接進 VM 的 WireGuard 隧道
+│       └── windows-ping.yml       # 測試 WinRM 能不能連上本機 Windows（見 inventory/windows.ini）
 ├── custom/
 │   ├── iso/                       # 放官方來源 ISO + manifest.json（OS → iso-path/build-path）
 │   ├── generated/                 # build 產物：preseed/、iso/、keys/（gitignored，只留 manifest/.gitkeep）
+│   ├── config/                    # Jinja2 模板——本來放在 roles/*/templates/，後來發現這個專案根本
+│   │   │                          # 沒在用真正的 Ansible role 機制（role 不能有自己的 hosts:，這裡
+│   │   │                          # 全部靠明確路徑引用），搬過來跟其他 custom/ 底下的東西放一起
+│   │   ├── debian_preseed_iso/        # preseed.cfg.j2、debian.vmx.j2
+│   │   ├── wireguard_control_panel/   # VM 端 wg0.conf.j2（server）
+│   │   └── wireguard_agent/           # 控制端 wg0.conf.j2（peer，含 WSL2 跟原生 Windows 共用）
 │   ├── scripts/
 │   │   ├── remaster-iso/debian.sh     # 重新封裝 ISO（注入檔案、改開機自動選單）
 │   │   ├── verify-iso/debian.sh       # 驗證官方未竄改 ISO
 │   │   ├── vm-form/debian/            # huh 表單：問 VM 名稱
 │   │   ├── bootstrap-sudo/            # 交叉編譯進 ISO 的一次性救援程式
-│   │   └── tasks/                     # Taskfile 的命名空間子檔（install/build/verify-iso）
-│   └── .env.example               # hypervisor 連線資訊範本（.env 本身 gitignored）
-├── inventory/ group_vars/ host_vars/   # Ansible 官方骨架（目前為空，.gitkeep 佔位）
-├── requirements.yml                # ansible-galaxy collections（community.crypto, ansible.posix）
-└── Taskfile.yaml                   # 任務入口，include 上面 custom/scripts/tasks/ 底下的檔案
+│   │   └── tasks/
+│   │       ├── go-task/               # Taskfile 的命名空間子檔（install/build/verify-iso/windows）
+│   │       └── ansible/               # 共用的 Ansible task 片段（include_tasks 引用，同樣原本在 roles/*/tasks/）
+│   │           ├── wireguard_keys/        # 金鑰產生/peer 名額產生/認領/標記已認領
+│   │           └── load_env/              # 解析 custom/.env 成 Ansible fact（不經過 OS 環境變數，見下方 inventory/）
+│   └── .env.example               # hypervisor/Windows 連線資訊範本（.env 本身 gitignored）
+├── inventory/
+│   ├── windows.ini                 # WinRM 連本機 Windows 用（WSL2 場景，透過 Enable-PSRemoting 開的 listener）
+│   └── group_vars/windows.yml      # windows group 的連線帳密，讀 custom/scripts/tasks/ansible/load_env 解析出來的 custom/.env
+├── group_vars/ host_vars/ roles/   # Ansible 官方骨架，目前皆為空，各自 .gitkeep 佔位（這個專案沒用到真正的 role 機制，見上方 custom/config/ 的說明）
+├── requirements.yml                # ansible-galaxy collections（community.crypto、ansible.posix、ansible.windows）
+└── Taskfile.yaml                   # 任務入口，include custom/scripts/tasks/go-task/ 底下的檔案
 ```
 
 ---

@@ -21,10 +21,11 @@
 # VM 根本還沒開機，不可能知道這個值。
 #
 # 不需要指定 peer 名字——用 glob 在 custom/generated/keys/wireguard-keys/wireguard_peers/
-# 底下找一個「還沒被任何機器認領」的 peer 位置來用（見 roles/wireguard_keys/tasks/
-# claim_peer.yml），避免兩邊搶到同一組金鑰——這也是為什麼 WSL2 跟 Windows 兩邊各自
-# 認領一次，而不是共用同一次認領的結果。claimed 標記是等這邊的設定真的成功之後
-# 才寫上去的（見 roles/wireguard_keys/tasks/mark_peer_claimed.yml），不是挑到就
+# 底下找一個「還沒被任何機器認領」的 peer 位置來用（見
+# custom/scripts/tasks/ansible/wireguard_keys/claim_peer.yml），避免兩邊搶到同一組
+# 金鑰——這也是為什麼 WSL2 跟 Windows 兩邊各自認領一次，而不是共用同一次認領的
+# 結果。claimed 標記是等這邊的設定真的成功之後
+# 才寫上去的（見 custom/scripts/tasks/ansible/wireguard_keys/mark_peer_claimed.yml），不是挑到就
 # 馬上寫——挑跟標記刻意分開兩步，避免 wg-quick up 之類的步驟中途失敗，卻已經把
 # 這個 peer 永久標記成用掉了。peer 位置本身是 control-panel/debian.yml 用
 # peer_slot_count 批次產生的——如果這裡找不到任何還沒被認領的位置，代表要嘛數量
@@ -98,7 +99,7 @@
 
     - name: 認領一個 peer 位置給 WSL2 自己用
       ansible.builtin.include_tasks:
-        file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/claim_peer.yml"
+        file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/wireguard_keys/claim_peer.yml"
 
     - name: 記住 WSL2 認領到的 peer 名稱（claimed_peer_name 等一下 Windows 那邊會被蓋掉，先存一份獨立的）
       ansible.builtin.set_fact:
@@ -129,7 +130,7 @@
     - name: 渲染 WSL2 自己的 wg0.conf（Endpoint 直接填實際 IP，不再留空）
       become: true
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/../../roles/wireguard_agent/templates/wg0.conf.j2"
+        src: "{{ playbook_dir }}/../../custom/config/wireguard_agent/wg0.conf.j2"
         dest: /etc/wireguard/wg0.conf
         mode: "0600"
       vars:
@@ -152,7 +153,7 @@
 
     - name: 隧道確定接通成功，才正式把 {{ wsl_peer_name }} 標記成已認領（見 claim_peer.yml 開頭說明：挑到跟標記分開兩步，避免中途失敗卻已經把這個 peer 用掉）
       ansible.builtin.include_tasks:
-        file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/mark_peer_claimed.yml"
+        file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/wireguard_keys/mark_peer_claimed.yml"
       vars:
         peer_to_claim: "{{ wsl_peer_name }}"
 
@@ -178,13 +179,21 @@
         mode: "0600"
 
     # ---------- 原生 Windows 那一邊（偵測不到就整段跳過） ----------
+    #
+    # 這一整段寫進 /mnt/c/...（DrvFS）的任務都加了 register/until/retries/delay 重試：
+    # unsafe_writes 解決的是 atomic_move 的 rename 在 DrvFS 上不支援 POSIX 原子替換
+    # 語義的問題，但實際遇到的失敗是在那之後一步——Ansible 寫完檔案內容後，統一會呼叫
+    # set_fs_attributes_if_different 去 chmod 最終路徑，這一步偶爾抓不到剛寫好的檔案
+    # （FileNotFoundError），推測是 DrvFS/9P 的 metadata 可見度有短暫延遲，或是 Windows
+    # Defender 即時掃描對新建檔案短暫上鎖，兩者都不是 Linux 這端能直接修的時序問題，
+    # 用重試繞過（重跑同一個 copy/template/lineinfile 本身是 idempotent 的，重試無副作用）。
 
     - name: 幫原生 Windows 另外認領一個 peer、產生 WireGuard for Windows 能直接匯入的 .conf，順便複製 SSH 金鑰、把 fingerprint 加進 known_hosts
       when: windows_conf_path | length > 0
       block:
         - name: 認領一個 peer 位置給原生 Windows 用（不能跟 WSL2 那個共用同一把金鑰）
           ansible.builtin.include_tasks:
-            file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/claim_peer.yml"
+            file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/wireguard_keys/claim_peer.yml"
 
         - name: 記住 Windows 認領到的 peer 名稱
           ansible.builtin.set_fact:
@@ -213,7 +222,7 @@
 
         - name: 寫 WireGuard for Windows 可以直接 Import tunnel(s) from file 的 .conf（跟 wg-quick 用的是同一種格式）
           ansible.builtin.template:
-            src: "{{ playbook_dir }}/../../roles/wireguard_agent/templates/wg0.conf.j2"
+            src: "{{ playbook_dir }}/../../custom/config/wireguard_agent/wg0.conf.j2"
             dest: "{{ windows_conf_path }}"
             mode: "0600"
             unsafe_writes: true # windows_conf_path 在 WSL2 掛載的 /mnt/c/...（DrvFS）底下，不支援 atomic_move 靠的 POSIX 原子替換語義，要跳過它直接寫
@@ -223,10 +232,14 @@
             wireguard_peer_public_key: "{{ (wireguard_vm_public_key_raw.content | b64decode).strip() }}"
             wireguard_preshared_key: "{{ (windows_peer_psk_raw.content | b64decode).strip() }}"
             wireguard_endpoint_ip: "{{ vm_endpoint_ip }}"
+          register: windows_conf_write
+          until: windows_conf_write is succeeded
+          retries: 3
+          delay: 2
 
         - name: .conf 確定寫出成功，才正式把 {{ windows_peer_name }} 標記成已認領（見 claim_peer.yml 開頭說明：挑到跟標記分開兩步，避免中途失敗卻已經把這個 peer 用掉）
           ansible.builtin.include_tasks:
-            file: "{{ playbook_dir }}/../../roles/wireguard_keys/tasks/mark_peer_claimed.yml"
+            file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/wireguard_keys/mark_peer_claimed.yml"
           vars:
             peer_to_claim: "{{ windows_peer_name }}"
 
@@ -243,6 +256,10 @@
             mode: "0600"
             remote_src: true
             unsafe_writes: true # 同上，目的地在 WSL2 掛載的 /mnt/c/...（DrvFS），atomic_move 在這種掛載點上會直接失敗
+          register: client_private_key_write
+          until: client_private_key_write is succeeded
+          retries: 3
+          delay: 2
 
         - name: 複製 charlie 的 client 公鑰
           ansible.builtin.copy:
@@ -251,6 +268,10 @@
             mode: "0644"
             remote_src: true
             unsafe_writes: true
+          register: client_public_key_write
+          until: client_public_key_write is succeeded
+          retries: 3
+          delay: 2
 
         - name: 把 VM 的 host key fingerprint 加進 Windows 原生環境真正的 known_hosts（不是複製一份獨立檔案，是直接 append 這一行；已經加過就不會重複加，也不會動到裡面其他主機原本的紀錄）
           ansible.builtin.lineinfile:
@@ -259,6 +280,10 @@
             create: true
             mode: "0600"
             unsafe_writes: true
+          register: known_hosts_write
+          until: known_hosts_write is succeeded
+          retries: 3
+          delay: 2
 
         - name: 印出 Windows 那邊還要做的事
           ansible.builtin.debug:

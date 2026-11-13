@@ -1,0 +1,45 @@
+---
+# 把 custom/.env 讀進來，解析成 dotenv_vars 這個 fact（一個 dict，key 是
+# .env 裡的變數名稱），讓 playbook 自己接下來用 {{ dotenv_vars.XXX }} 取值。
+#
+# 刻意不走 lookup('env', ...) 那條路（HYPERVISOR_* 那組目前還是這樣讀）：
+# lookup('env', ...) 要讀到值，前提是執行 ansible-playbook 的那個 shell
+# 本身已經把 .env 的內容 export 成真正的 OS 環境變數（Taskfile 裡用
+# `set -a; source custom/.env` 做這件事）——這代表 Task 執行環境的變數會
+# 整個灌進這個 playbook 的行程環境，而且只要還在同一個 shell session 裡，
+# 後面接著跑的任何其他指令也都看得到這些值，等於讓 Task 層級的變數「汙染」
+# 了不只這一個 playbook。這個檔案改成純粹在 Ansible 內部讀檔案、解析成
+# fact，完全不經過 OS 環境變數這一層，值只在這次 ansible-playbook 執行
+# 期間、在 Ansible 自己的記憶體內有效，跑完就沒了，也不會外溢到呼叫它的
+# shell 或其他程式。
+#
+# 呼叫前要先 set 好 dotenv_path（.env 檔案的絕對路徑）。
+
+- name: 確認 {{ dotenv_path }} 存在
+  ansible.builtin.stat:
+    path: "{{ dotenv_path }}"
+  register: dotenv_stat
+
+- name: 擋下「.env 不存在」的情況
+  ansible.builtin.assert:
+    that: dotenv_stat.stat.exists
+    fail_msg: "找不到 {{ dotenv_path }}，請先複製一份 custom/.env.example 出來並填好真實值"
+
+- name: 讀取 .env 內容
+  ansible.builtin.slurp:
+    src: "{{ dotenv_path }}"
+  register: dotenv_raw
+
+- name: 解析每一行 KEY=VALUE，組成 dotenv_vars（跳過空行、# 開頭的註解、沒有 = 的行；VALUE 兩側的單引號／雙引號會被剝掉，比對 bash source 的行為）
+  ansible.builtin.set_fact:
+    dotenv_vars: "{{ dotenv_vars | default({}) | combine({ (item.split('=', 1)[0] | trim): (item.split('=', 1)[1] | trim | trim(dotenv_quote_chars)) }) }}"
+  vars:
+    dotenv_quote_chars: "'\""
+  loop: "{{ (dotenv_raw.content | b64decode).splitlines() }}"
+  loop_control:
+    label: "{{ item.split('=')[0] if '=' in item else item }}" # 只印變數名稱，不要把值（可能是密碼）印進 log
+  when:
+    - item | trim | length > 0
+    - not (item | trim).startswith('#')
+    - "'=' in item"
+  no_log: "{{ dotenv_hide_values | default(true) }}" # 預設不把解析過程（含值）印進 log；呼叫端真的要除錯時可以傳 dotenv_hide_values: false

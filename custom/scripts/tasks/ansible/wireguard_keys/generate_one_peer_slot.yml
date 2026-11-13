@@ -2,8 +2,7 @@
 # 在 wireguard_peers_dir 底下新增一個匿名的 peer 位置：自己的金鑰對、
 # PresharedKey、配到的 IP。目錄名稱用遞增數字（peer1、peer2、...），純粹是
 # 識別碼，建立的時候還不知道將來會被哪台機器拿去用——由誰認領是
-# claim_peer.yml 的事，兩者刻意分開（見 roles/wireguard_keys/tasks/claim_peer.yml
-# 開頭的說明）。
+# claim_peer.yml 的事，兩者刻意分開（見 claim_peer.yml 開頭的說明）。
 #
 # 用 Ansible 既有的 find 模組 + Jinja filter 算下一個編號/IP，不額外寫 shell
 # 腳本：IP 直接由編號推算（peerN → 10.105.0.(N+1)），不需要讀任何既有

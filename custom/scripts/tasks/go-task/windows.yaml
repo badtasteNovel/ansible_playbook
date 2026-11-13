@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: '3'
+
+tasks:
+  test:
+    desc: "測試 WinRM 能不能連上 inventory/windows.ini 裡設定的 Windows 主機（win_ping）"
+    silent: true
+    cmds:
+      - ansible-playbook playbook/wsl/windows-ping.yml -i inventory/windows.ini

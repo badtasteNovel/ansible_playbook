@@ -63,6 +63,13 @@ tasks:
         cd custom/scripts/bootstrap-sudo
         go mod download
 
+  winrm:
+    desc: "安裝 pywinrm（ansible.windows collection 透過 WinRM 連 Windows 主機要用，見 inventory/windows.ini）"
+    silent: true
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install -y python3-winrm # 連同 python3-requests-ntlm 一起裝好，對應 inventory/windows.ini 的 ansible_winrm_transport=ntlm
+
   default:
     desc: "安裝開發這個專案所需的所有工具"
     cmds:
@@ -73,3 +80,4 @@ tasks:
       - task: sshpass
       - task: wireguard-tools
       - task: go
+      - task: winrm

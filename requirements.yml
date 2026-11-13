@@ -2,3 +2,4 @@
 collections:
   - name: community.crypto
   - name: ansible.posix
+  - name: ansible.windows # 透過 WinRM 管理 Windows 主機（例如開 Windows Defender Firewall 規則）用，見 inventory/windows.ini

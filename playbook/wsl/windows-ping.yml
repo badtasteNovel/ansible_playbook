@@ -1,0 +1,39 @@
+---
+# 測試 WinRM 能不能連上 inventory/windows.ini 設定的 Windows 主機。拆成兩個
+# play 是必要的，不是風格選擇：ansible_user/ansible_password 是「連線本身」
+# 要用的變數，第二個 play 一開始、還沒執行任何 task 之前就要先決定好，不可能
+# 靠第二個 play 自己的 task 去跑 custom/scripts/tasks/ansible/load_env（那時候
+# 已經要連線了，連線用的帳密卻還沒讀出來，雞生蛋蛋生雞）。所以先用第一個 play
+# （在 localhost 上）把 custom/.env 讀進 dotenv_vars 這個 fact，第二個 play 再
+# 透過 inventory/group_vars/windows.yml（套用到所有 hosts: windows 的 play，
+# 不用每個 play 自己重複寫 ansible_user/ansible_password）把值接過去當連線
+# 變數用。
+#
+# 這整套刻意不靠 OS 環境變數（不用 lookup('env', ...)，Taskfile 那邊也不用
+# `set -a; source custom/.env`）——見 custom/scripts/tasks/ansible/load_env/main.yml
+# 開頭的說明。
+#
+# 以後其他要對 windows group 下指令的 playbook，都要照這個結構：第一個 play
+# 先在 localhost 上載入 custom/scripts/tasks/ansible/load_env，第二個 play 才
+# 真正 hosts: windows
+# ——inventory/group_vars/windows.yml 的 ansible_user/ansible_password 是靠
+# 第一個 play 產生的 hostvars['localhost'].dotenv_vars 撐起來的，少了第一個
+# play，第二個 play 一開始連線就會因為 dotenv_vars 不存在直接範本解析失敗。
+
+- name: 讀取 custom/.env，準備好 WinRM 連線要用的帳密
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: 載入 custom/.env
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../../custom/scripts/tasks/ansible/load_env/main.yml"
+      vars:
+        dotenv_path: "{{ playbook_dir }}/../../custom/.env"
+
+- name: 測試 WinRM 連線（win_ping）
+  hosts: windows
+  gather_facts: false
+  tasks:
+    - name: win_ping
+      ansible.windows.win_ping:

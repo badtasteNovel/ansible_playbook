@@ -123,11 +123,13 @@ d-i finish-install/reboot_in_progress note
 ###   才給這個額度），避免 VM 時鐘因為 host 暫停/搬遷等原因飄掉之後再也追不回來。
 ###
 ### - ufw：預設 deny incoming / allow outgoing，只開三種東西：(1) WireGuard
-###   自己的 UDP 監聽埠——這個必須對任何來源開放，不能限定成只准
-###   {{ wireguard_peer_subnet }}，因為 WireGuard 的 handshake 封包本來就是從
-###   peer 還沒加入隧道前的真實來源位址打過來的，隧道要先通才會有
-###   {{ wireguard_peer_subnet }} 這個位址，限定來源等於自己把隧道堵死；
-###   (2) SSH port，限定只准 {{ wireguard_peer_subnet }}——跟 sshd 自己的
+###   自己的 UDP 監聽埠——限定只准 {{ lan_subnet }}（實體 LAN 網段，不是
+###   {{ wireguard_peer_subnet }}）連進來：WireGuard 的 handshake 封包是從 peer
+###   還沒加入隧道前的真實來源位址打過來的，不可能用 {{ wireguard_peer_subnet }}
+###   這個「隧道通了才會有」的位址去限制，否則自己把隧道堵死；但所有合法的 peer
+###   （ESXi host、控制端本機）都在同一個實體 LAN 網段，所以用 {{ lan_subnet }}
+###   限制來源是可行的，比完全對任何來源開放多一層防護；(2) SSH port，限定只准
+###   {{ wireguard_peer_subnet }}——跟 sshd 自己的
 ###   ListenAddress 鎖定是同一個不變量（SSH 全程只能從這個網段進來，沒有任何
 ###   例外窗口），ufw 只是再加一層、不是另開例外；(3) chrony 的 123/udp，
 ###   也限定只准 {{ wireguard_peer_subnet }}，對應上面 chrony 的 allow 設定。
@@ -178,7 +180,7 @@ d-i preseed/late_command string \
   in-target systemctl enable chrony; \
   in-target ufw default deny incoming; \
   in-target ufw default allow outgoing; \
-  in-target ufw allow from 192.168.0.0/24 to any port {{ wireguard_listen_port }} proto udp; \ 
+  in-target ufw allow from {{ lan_subnet }} to any port {{ wireguard_listen_port }} proto udp; \
   in-target ufw allow from {{ wireguard_peer_subnet }} to any port {{ ssh_port }} proto tcp; \
   in-target ufw allow from {{ wireguard_peer_subnet }} to any port 123 proto udp; \
   sed -i 's/^ENABLED=.*/ENABLED=yes/' /target/etc/ufw/ufw.conf; \

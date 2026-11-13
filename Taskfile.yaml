@@ -2,9 +2,10 @@
 version: '3'
 
 includes:
-  install: ./custom/scripts/tasks/install.yaml
-  verify-iso: ./custom/scripts/tasks/verify-iso.yaml
-  build: ./custom/scripts/tasks/build-vm.yaml
+  install: ./custom/scripts/tasks/go-task/install.yaml
+  verify-iso: ./custom/scripts/tasks/go-task/verify-iso.yaml
+  build: ./custom/scripts/tasks/go-task/build-vm.yaml
+  windows: ./custom/scripts/tasks/go-task/windows.yaml
 
 tasks:
   select-iso:
