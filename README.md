@@ -45,6 +45,9 @@ sh -c "$(curl -ssL https://taskfile.dev/install.sh)" -- -d -b /tmp && sudo mv /t
 ```powershell
 Get-NetFirewallPortFilter | Where-Object { $_.LocalPort -eq 5985 } | Get-NetFirewallRule | Set-NetFirewallRule -RemoteAddress 127.0.0.1
 ```
+```powershell
+netstat -ano | Select-String "5985"
+```
 
 ## 📦 安裝指南 (Installation)
 
