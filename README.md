@@ -48,19 +48,24 @@ Get-NetFirewallPortFilter | Where-Object { $_.LocalPort -eq 5985 } | Get-NetFire
 ```powershell
 netstat -ano | Select-String "5985"
 ```
-3. **確保 127.0.0.1 在 windows 的 NTLM loopback check 白名單中**
+3. **安裝openssh-server**
+安裝 openSSH server
 ```powershell
-$p = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0"
-$old = (Get-ItemProperty $p -Name BackConnectionHostNames -ErrorAction SilentlyContinue).BackConnectionHostNames
-$new = @($old) + "127.0.0.1" | Where-Object { $_ } | Select-Object -Unique
-Set-ItemProperty -Path $p -Name BackConnectionHostNames -Value $new -Type MultiString 
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
 ```
-**檢查是否已添加**
+啟動服務，並設成開機自動啟動
 ```powershell
-Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" -Name "BackConnectionHostNames" | Select-Object -ExpandProperty BackConnectionHostNames
+Start-Service sshd
+Set-Service -Name sshd -StartupType 'Automatic'
 ```
+確認防火牆規則有沒有自動建立（安裝時通常會自動加一條）
 ```powershell
-Restart-Service WinRM
+Get-NetFirewallRule -Name *ssh* | Set-NetFirewallAddressFilter -RemoteAddress 127.0.0.1
+```
+
+如果第 3 步查不到規則(沒有自動建立),補上:
+```powershell
+New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -RemoteAddress 127.0.0.1
 ```
 
 ## 📦 安裝指南 (Installation)
