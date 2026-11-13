@@ -34,11 +34,11 @@
 ---
 ## 用前環境設置 (Environment Setup)
 
-1. **安裝 go-task**
+### 1. **安裝 go-task**
 ```bash
 sh -c "$(curl -ssL https://taskfile.dev/install.sh)" -- -d -b /tmp && sudo mv /tmp/task /usr/local/bin/task && task --version
 ```
-2. **開啟WinRM服務**(windows)
+### 2. **開啟WinRM服務**(windows)
 ```powershell
  Enable-PSRemoting
 ```
@@ -48,7 +48,7 @@ Get-NetFirewallPortFilter | Where-Object { $_.LocalPort -eq 5985 } | Get-NetFire
 ```powershell
 netstat -ano | Select-String "5985"
 ```
-3. **安裝openssh-server**
+### 3. **安裝openssh-server**
 安裝 openSSH server
 ```powershell
 Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
@@ -70,7 +70,7 @@ Get-NetFirewallRule -Name *ssh* | Get-NetFirewallAddressFilter | Set-NetFirewall
 ```powershell
 New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -RemoteAddress 127.0.0.1
 ```
-4. 查詢 127.0.0.1 是否已成為限制ip
+### 4. **查詢 127.0.0.1 是否已成為限制ip**
 ```powershell
 Get-NetFirewallRule -Name *ssh* | Get-NetFirewallAddressFilter
 ```
